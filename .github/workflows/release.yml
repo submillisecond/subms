@@ -30,25 +30,7 @@ jobs:
 
       - name: Extract + cross-check version
         id: tag
-        run: |
-          set -e
-          TAG="${GITHUB_REF#refs/tags/}"
-          VER="${TAG#v}"
-          echo "version=$VER" >> "$GITHUB_OUTPUT"
-          if echo "$VER" | grep -q -- '-'; then
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
-          fi
-
-          CARGO_VER=$(grep -E '^version\s*=' rust/Cargo.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
-          POM_VER=$(grep -m1 '<version>' java/pom.xml | sed -E 's/.*<version>(.*)<\/version>.*/\1/')
-
-          echo "tag=$VER cargo=$CARGO_VER pom=$POM_VER"
-          if [ "$CARGO_VER" != "$VER" ] || [ "$POM_VER" != "$VER" ]; then
-            echo "::error::Tag v$VER does not match Cargo.toml ($CARGO_VER) or pom.xml ($POM_VER). Bump manifests before tagging."
-            exit 1
-          fi
+        run: bash .github/scripts/release-verify-tag.sh
 
   publish-rust:
     name: publish to crates.io
@@ -71,20 +53,11 @@ jobs:
       - name: Summary
         if: always()
         env:
+          STATUS: ${{ job.status }}
           VER: ${{ needs.verify-tag-matches-manifest.outputs.version }}
-        run: |
-          {
-            echo "## Rust publish"
-            echo ""
-            if [ "${{ job.status }}" = "success" ]; then
-              echo ":white_check_mark: \`subms ${VER}\` published to crates.io"
-              echo ""
-              echo "- [View on crates.io](https://crates.io/crates/subms/${VER})"
-              echo "- [Docs on docs.rs](https://docs.rs/subms/${VER})"
-            else
-              echo ":x: cargo publish failed - review logs above"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+        # working-directory above pins us at rust/; the script lives at repo root.
+        working-directory: ${{ github.workspace }}
+        run: bash .github/scripts/release-summary-rust.sh
 
   publish-java:
     name: deploy to Maven Central
@@ -117,22 +90,10 @@ jobs:
       - name: Summary
         if: always()
         env:
+          STATUS: ${{ job.status }}
           VER: ${{ needs.verify-tag-matches-manifest.outputs.version }}
-        run: |
-          {
-            echo "## Java publish (staged)"
-            echo ""
-            if [ "${{ job.status }}" = "success" ]; then
-              echo ":white_check_mark: \`com.submillisecond:subms:${VER}\` uploaded to Sonatype Central as a **staged deployment**"
-              echo ""
-              echo "**Manual step required:** log in to the portal and release the staged artifact."
-              echo ""
-              echo "- [Sonatype Central deployments dashboard](https://central.sonatype.com/publishing) - click **Publish** on the staged \`com.submillisecond:subms:${VER}\` deployment to ship it. Click **Drop** to roll back instead."
-              echo "- [Maven Central artifact page](https://central.sonatype.com/artifact/com.submillisecond/subms/${VER}) - 200 once the staged deployment is published."
-            else
-              echo ":x: mvn deploy failed - review logs above. The staged deployment (if any) can be dropped from the [Central deployments dashboard](https://central.sonatype.com/publishing)."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+        working-directory: ${{ github.workspace }}
+        run: bash .github/scripts/release-summary-java.sh
 
   github-release:
     name: GitHub Release + floating major tag
@@ -152,45 +113,12 @@ jobs:
 
       - name: Update floating major tag
         if: ${{ needs.verify-tag-matches-manifest.outputs.is_prerelease == 'false' }}
-        run: |
-          set -e
-          TAG="${GITHUB_REF#refs/tags/}"
-          MAJOR=$(echo "$TAG" | sed -E 's/^v([0-9]+).*/v\1/')
-          if [ "$MAJOR" = "$TAG" ]; then
-            echo "tag $TAG doesn't match v<major>.<minor>.<patch>; skipping floater"
-            exit 0
-          fi
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -f "$MAJOR" "$TAG"
-          git push origin "$MAJOR" --force
+        run: bash .github/scripts/release-update-floating-tag.sh
 
       - name: Summary
         if: always()
         env:
+          STATUS: ${{ job.status }}
           VER: ${{ needs.verify-tag-matches-manifest.outputs.version }}
           PRE: ${{ needs.verify-tag-matches-manifest.outputs.is_prerelease }}
-        run: |
-          {
-            echo "## Release v${VER}"
-            echo ""
-            if [ "${{ job.status }}" = "success" ]; then
-              echo ":white_check_mark: GitHub Release created with auto-generated notes"
-              if [ "${PRE}" = "false" ]; then
-                MAJOR="v$(echo "${VER}" | cut -d. -f1)"
-                echo ":white_check_mark: Floating major tag \`${MAJOR}\` moved to this SHA - consumers tracking \`@${MAJOR}\` are now on \`v${VER}\`"
-              else
-                echo ":information_source: Pre-release; floating major tag not moved"
-              fi
-              echo ""
-              echo "- [Release notes](https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${VER})"
-              echo ""
-              echo "### Next steps"
-              echo ""
-              echo "1. **Publish the staged Maven deployment** at <https://central.sonatype.com/publishing>."
-              echo "2. **Re-run subms-cookbook CI** once both registries serve \`${VER}\` - the cookbook recipe deps will then resolve."
-              echo "3. **Update consumers** to pin \`subms = \"${VER}\"\` / \`<version>${VER}</version>\` (or float on \`v$(echo "${VER}" | cut -d. -f1)\` for auto-patches)."
-            else
-              echo ":x: GitHub Release step failed - review logs above"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+        run: bash .github/scripts/release-summary-overall.sh

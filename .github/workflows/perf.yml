@@ -47,12 +47,8 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          set -e
-          git worktree add ../base-tree "$BASE_SHA"
-          ( cd ../base-tree/rust && cargo build --release --example perf_main )
-          ../base-tree/rust/target/release/examples/perf_main > rust-baseline.json
-          echo "exists=true" >> "$GITHUB_OUTPUT"
+        working-directory: rust
+        run: bash ../.github/scripts/perf-baseline-rust.sh
 
       - name: Candidate bench (Rust, this ref)
         uses: submillisecond/subms-action-bench@main      # TODO: pin to v0.1.0 once tagged
@@ -113,13 +109,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         working-directory: java
-        run: |
-          set -e
-          git worktree add ../../base-tree "$BASE_SHA"
-          ( cd ../../base-tree/java && mvn -q -DskipTests test-compile )
-          java -cp "../../base-tree/java/target/test-classes;../../base-tree/java/target/classes" \
-               com.submillisecond.perf.bench.PerfMain > ../java-baseline.json
-          echo "exists=true" >> "$GITHUB_OUTPUT"
+        run: bash ../.github/scripts/perf-baseline-java.sh
 
       - name: Candidate bench (Java, this ref)
         working-directory: java
