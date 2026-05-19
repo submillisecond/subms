@@ -1,0 +1,179 @@
+name: perf (self-dogfood)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# `subms` dogfooding its own ecosystem: this workflow runs the harness's
+# own self-bench (rust/examples/perf_main.rs + Java PerfMain) through
+# `subms-action-bench`, then diffs the result against the base ref using
+# `subms-action-diff`. If a future PR regresses the harness's hot paths
+# (e.g. `stage.time()` overhead spikes by 15%), the gate catches it on the
+# PR before merge.
+#
+# This is the same workflow downstream consumers of `subms` are
+# encouraged to set up - we run it against ourselves to prove it works.
+
+permissions:
+  contents: read
+  pull-requests: write     # for the sticky PR comment
+
+jobs:
+  rust:
+    name: rust self-bench + diff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2     # need PR base SHA accessible
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-perf-${{ hashFiles('rust/Cargo.toml') }}
+
+      # Snapshot the base ref's self-bench output if this is a PR. The
+      # cheapest way to get a "baseline" is to check out the base SHA into
+      # a side dir, build + run the bench there, then return to the PR
+      # tree. (More efficient than fetching from a release artifact early
+      # in the project's life.)
+      - name: Baseline bench (Rust, base ref)
+        id: baseline
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -e
+          git worktree add ../base-tree "$BASE_SHA"
+          ( cd ../base-tree/rust && cargo build --release --example perf_main )
+          ../base-tree/rust/target/release/examples/perf_main > rust-baseline.json
+          echo "exists=true" >> "$GITHUB_OUTPUT"
+
+      - name: Candidate bench (Rust, this ref)
+        uses: submillisecond/subms-action-bench@main      # TODO: pin to v0.1.0 once tagged
+        with:
+          command: cargo run --release --example perf_main
+          workdir: rust
+          warmup-runs: "1"
+          retries: "1"
+          output: rust-candidate.json
+
+      - name: Diff (Rust)
+        if: steps.baseline.outputs.exists == 'true'
+        uses: submillisecond/subms-action-diff@main
+        with:
+          baseline: rust-baseline.json
+          candidate: rust-candidate.json
+          threshold-pct: "15"
+          per-stage-thresholds: |
+            { "time_closure": 25, "record_ns": 25 }
+          workload-label: "subms self-bench (rust)"
+          artifact-name: subms-self-perf-rust
+          # Quiet the per-matrix comment - the aggregate job below posts
+          # ONE rollup for both languages, which reads cleaner on the PR.
+          comment: "false"
+          # Don't fail the build for the harness's own bench during the
+          # noisy early-adoption phase; surface the comment but stay green.
+          fail-on-regression: "false"
+
+      # Demo the file + stdout sinks: zero-secret observability. The file
+      # sink accumulates one JSON line per stage*metric tuple; the artifact
+      # is downloadable from the run summary for trend tracking.
+      - name: Sink (Rust)
+        if: steps.baseline.outputs.exists == 'true'
+        uses: submillisecond/subms-action-diff-sink@main
+        with:
+          input: subms-diff.json
+          sink: "stdout,file"
+          file-path: rust-perf-feed.jsonl
+          tags: '{"lang":"rust","repo":"subms","bench":"self"}'
+
+  java:
+    name: java self-bench + diff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Baseline bench (Java, base ref)
+        id: baseline
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        working-directory: java
+        run: |
+          set -e
+          git worktree add ../../base-tree "$BASE_SHA"
+          ( cd ../../base-tree/java && mvn -q -DskipTests test-compile )
+          java -cp "../../base-tree/java/target/test-classes;../../base-tree/java/target/classes" \
+               com.submillisecond.perf.bench.PerfMain > ../java-baseline.json
+          echo "exists=true" >> "$GITHUB_OUTPUT"
+
+      - name: Candidate bench (Java, this ref)
+        working-directory: java
+        run: |
+          mvn -q -DskipTests test-compile
+          java -cp "target/test-classes:target/classes" \
+               com.submillisecond.perf.bench.PerfMain > ../java-candidate.json
+
+      - name: Diff (Java)
+        if: steps.baseline.outputs.exists == 'true'
+        uses: submillisecond/subms-action-diff@main
+        with:
+          baseline: java-baseline.json
+          candidate: java-candidate.json
+          threshold-pct: "15"
+          per-stage-thresholds: |
+            { "time_closure": 25, "record_ns": 25, "summary_to_json": 20 }
+          workload-label: "subms self-bench (java)"
+          artifact-name: subms-self-perf-java
+          comment: "false"
+          fail-on-regression: "false"
+
+      - name: Sink (Java)
+        if: steps.baseline.outputs.exists == 'true'
+        uses: submillisecond/subms-action-diff-sink@main
+        with:
+          input: subms-diff.json
+          sink: "stdout,file"
+          file-path: java-perf-feed.jsonl
+          tags: '{"lang":"java","repo":"subms","bench":"self"}'
+
+  # Roll the rust + java matrix into ONE PR comment + one verdict.
+  # Demonstrates the aggregator pattern downstream consumers use when they
+  # run subms-action-diff in a matrix (per-recipe / per-lang / per-tier).
+  aggregate:
+    name: rollup (rust + java)
+    needs: [rust, java]
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download per-language diff artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: subms-self-perf-*
+          path: diffs
+
+      - uses: submillisecond/subms-action-diff-aggregate@main
+        with:
+          diff-glob: "diffs/*"
+          top-n: "8"
+          fail-on-regression: "false"   # match the per-language posture during early adoption
+          comment-marker: "subms-self-bench-rollup"

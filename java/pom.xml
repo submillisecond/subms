@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.submillisecond</groupId>
+    <artifactId>subms</artifactId>
+    <version>0.3.0</version>
+    <packaging>jar</packaging>
+
+    <name>subms</name>
+    <description>The sub-millisecond perf harness for Java. Zero-dependency library that records timed samples per stage, computes percentiles, supports coordinated-omission correction, and emits a stable JSON contract. Byte-equivalent to the `subms` Rust crate.</description>
+    <url>https://github.com/submillisecond/subms</url>
+
+    <licenses>
+        <license>
+            <name>MIT License</name>
+            <url>https://opensource.org/licenses/MIT</url>
+            <distribution>repo</distribution>
+        </license>
+        <license>
+            <name>Apache License 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <id>knaier</id>
+            <name>Kieran Smith</name>
+            <email>kieran@kieransmith.tech</email>
+            <url>https://submillisecond.com</url>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:https://github.com/submillisecond/subms.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/submillisecond/subms.git</developerConnection>
+        <url>https://github.com/submillisecond/subms</url>
+        <tag>HEAD</tag>
+    </scm>
+
+    <properties>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <!--
+        Zero runtime dependencies. Test-scope JUnit 5 only.
+
+        Local dev:
+          mvn -q package
+          mvn -q install                       # publishes to ~/.m2 for downstream tests
+          mvn -q test
+
+        Release (tag push triggers .github/workflows/release.yml):
+          mvn -B -P release deploy             # staging via central-publishing-maven-plugin
+
+        Required Maven Central setup (one-time per host):
+          - com.submillisecond namespace verified at https://central.sonatype.com
+          - GPG key + passphrase wired into the runner via secrets
+          - OSSRH_USERNAME / OSSRH_TOKEN secrets set on the GitHub repo
+    -->
+
+    <dependencies>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>6.0.3</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.5</version>
+            </plugin>
+        </plugins>
+    </build>
+
+    <!--
+        Release profile: only active when `-P release` is passed. Keeps the
+        plain `mvn install` workflow fast and free of GPG / Central plugin
+        overhead during dev iteration.
+    -->
+    <profiles>
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <!-- Sources jar - Central requires it for every release. -->
+                    <plugin>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <version>3.3.1</version>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals><goal>jar-no-fork</goal></goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                    <!-- Javadoc jar - Central requires it too. -->
+                    <plugin>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <version>3.10.1</version>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals><goal>jar</goal></goals>
+                                <configuration>
+                                    <!-- Skip strict doclint - Java 21 javadoc is unforgiving about missing tags on small libraries. -->
+                                    <doclint>none</doclint>
+                                    <source>${maven.compiler.source}</source>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                    <!-- GPG signs every artefact. Central rejects unsigned uploads.
+                         Requires a GPG key configured locally; run
+                         `gpg list-secret-keys` (two dashes between gpg and the
+                         flag) to confirm. Pass passphrase via system property:
+                         -Dgpg.passphrase=$env:GPG_PASSPHRASE -->
+                    <plugin>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>3.2.7</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals><goal>sign</goal></goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                    <!-- Central Publishing Portal plugin: bundles signed artefacts
+                         and uploads them to Central's staging. publishingServerId
+                         matches the <server id="central"> in ~/.m2/settings.xml.
+                         Auto-publishes if `<autoPublish>true</autoPublish>` is set;
+                         currently left manual so you can inspect on the portal first. -->
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>0.9.0</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

@@ -1,0 +1,65 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Each language side runs in its own job so a Rust regression doesn't mask
+# a Java one and vice versa. Both must be green before merge.
+
+jobs:
+  rust:
+    name: rust (cargo test + clippy + fmt)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: cargo fmt
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: cargo test (no features)
+        run: cargo test --no-default-features
+
+      - name: cargo test (all features)
+        run: cargo test --all-features
+
+      - name: cargo doc
+        run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  java:
+    name: java (mvn test, JDK 21)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: java
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: mvn verify
+        run: mvn -B -q verify

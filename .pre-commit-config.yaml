@@ -1,0 +1,44 @@
+# Pre-commit hooks for `subms` contributors. Catches perf regressions
+# before they leave the laptop - same diff math the CI gate runs at PR
+# time, just operating on the staged perf JSON instead of a re-bench.
+#
+# Install:
+#   pip install pre-commit
+#   pre-commit install
+#
+# Trigger manually on staged files:
+#   pre-commit run --all-files
+#
+# The hook does NOT re-run the bench. It compares the staged perf JSON
+# against the HEAD version. Re-bench is a separate step (typically run
+# locally before staging the new perf JSON).
+
+repos:
+  # subms-perf-diff: refuse the commit if any staged perf JSON regresses
+  # vs HEAD beyond the configured per-stage threshold. Mirrors the
+  # subms-action-diff CI gate.
+  - repo: https://github.com/submillisecond/subms-actions
+    rev: main                          # TODO: pin to a release tag once tagged
+    hooks:
+      - id: subms-perf-diff
+        # Override the default 10% global threshold for this repo's
+        # self-bench. record_ns is sub-100ns and noisy at that scale, so
+        # we tolerate more drift on it without losing the gate on slower
+        # stages (summarize, summary_to_json, diff_summary).
+        args: []
+        files: '.*perf.*\.json$'
+        # Per-stage thresholds applied across all matching files. These
+        # match the values in .github/workflows/perf.yml so local + CI
+        # agree on what counts as a regression.
+        env:
+          SUBMS_PRECOMMIT_THRESHOLD_PCT: "15"
+          SUBMS_PRECOMMIT_PER_STAGE: '{"time_closure":25,"record_ns":25,"summary_to_json":20}'
+
+  # Read-only summary hook - prints the percentile table for every staged
+  # perf JSON. Useful even without the diff (e.g. first commit of a new
+  # bench, or when reviewing someone else's perf output in a PR).
+  - repo: https://github.com/submillisecond/subms-actions
+    rev: main
+    hooks:
+      - id: subms-perf-summary
+        files: '.*perf.*\.json$'

@@ -1,0 +1,21 @@
+# Rust
+rust/target/
+rust/Cargo.lock          # library - keep dependents free to resolve
+
+# Java
+java/target/
+java/dependency-reduced-pom.xml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artefacts that should never land
+**/*.log
+**/*.tmp

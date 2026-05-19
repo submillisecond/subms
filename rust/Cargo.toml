@@ -1,0 +1,23 @@
+[package]
+name = "subms"
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Kieran Smith <kieran@kieransmith.tech>"]
+description = "The sub-millisecond perf harness for Rust. Zero-dependency std-only library that records timed samples per stage, computes percentiles, supports coordinated-omission correction, runs scale sweeps, and emits a stable JSON contract. Byte-equivalent to the Java sibling com.submillisecond:subms."
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/submillisecond/subms"
+homepage = "https://github.com/submillisecond/subms"
+documentation = "https://docs.rs/subms"
+keywords = ["benchmark", "performance", "perf-testing", "low-latency", "p99"]
+categories = ["development-tools::profiling", "development-tools::testing"]
+
+[lib]
+name = "subms"
+path = "src/lib.rs"
+
+# Zero external dependencies - std only. JUnit's Rust analogue (`#[test]`) is built-in.
+[dependencies]
+
+[dev-dependencies]
