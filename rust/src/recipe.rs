@@ -29,7 +29,10 @@ pub trait SubMsRecipe {
     fn run(&self, h: &mut SubMsPerfHarness, params: &SubMsBenchParams);
 }
 
-pub fn benchmark<R: SubMsRecipe + ?Sized>(recipe: &R, params: &SubMsBenchParams) -> SubMsPerfHarness {
+pub fn benchmark<R: SubMsRecipe + ?Sized>(
+    recipe: &R,
+    params: &SubMsBenchParams,
+) -> SubMsPerfHarness {
     let mut h = SubMsPerfHarness::new(recipe.name(), "rust");
     h.input("entries", &params.entries.to_string());
     h.input("warmup", &params.warmup.to_string());

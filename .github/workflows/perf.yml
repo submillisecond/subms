@@ -1,11 +1,11 @@
-name: perf (self-dogfood)
+name: perf (self-bench)
 
 on:
   push:
     branches: [main]
   pull_request:
 
-# `subms` dogfooding its own ecosystem: this workflow runs the harness's
+# `subms` exercising its own ecosystem: this workflow runs the harness's
 # own self-bench (rust/examples/perf_main.rs + Java PerfMain) through
 # `subms-action-bench`, then diffs the result against the base ref using
 # `subms-action-diff`. If a future PR regresses the harness's hot paths

@@ -59,13 +59,13 @@ pub mod timer;
 pub mod util;
 
 pub use bench::{
-    assert_p99_under, diff_summary, diff_summary_with, diff_to_json, format_ns, percentile,
-    print_diff, print_summary, print_sweep, run_bench, run_sweep, summarize, summarize_lean,
-    summarize_sweep, summary_to_json, sweep_to_json, SubMsBenchAssertion,
-    DEFAULT_REGRESSION_THRESHOLD_PCT,
+    DEFAULT_REGRESSION_THRESHOLD_PCT, SubMsBenchAssertion, assert_p99_under, diff_summary,
+    diff_summary_with, diff_to_json, format_ns, percentile, print_diff, print_summary, print_sweep,
+    run_bench, run_sweep, summarize, summarize_lean, summarize_sweep, summary_to_json,
+    sweep_to_json,
 };
 pub use params::{parse_bool, parse_string, parse_u64, parse_usize};
-pub use recipe::{benchmark, SubMsBenchParams, SubMsRecipe};
+pub use recipe::{SubMsBenchParams, SubMsRecipe, benchmark};
 pub use summary::{
     SubMsBenchDiff, SubMsBenchSummary, SubMsBenchSweep, SubMsMetricDiff, SubMsStageDiff,
     SubMsStageSummary,
@@ -87,7 +87,10 @@ pub struct SubMsStage {
 
 impl SubMsStage {
     fn new(name: &str, capacity: usize) -> Self {
-        Self { name: name.to_string(), samples: Vec::with_capacity(capacity) }
+        Self {
+            name: name.to_string(),
+            samples: Vec::with_capacity(capacity),
+        }
     }
     /// Record an explicit duration in nanoseconds.
     pub fn record(&mut self, ns: u64) {
@@ -117,8 +120,12 @@ impl SubMsStage {
         SubMsPacedStage::new(self, target_ops_per_second)
     }
 
-    pub fn name(&self) -> &str { &self.name }
-    pub fn samples(&self) -> &[u64] { &self.samples }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn samples(&self) -> &[u64] {
+        &self.samples
+    }
 }
 
 /// Coordinated-omission-corrected stage wrapper. Each [`SubMsPacedStage::time`]
@@ -138,7 +145,10 @@ pub struct SubMsPacedStage<'a> {
 
 impl<'a> SubMsPacedStage<'a> {
     fn new(stage: &'a mut SubMsStage, target_ops_per_second: f64) -> Self {
-        assert!(target_ops_per_second > 0.0, "target_ops_per_second must be > 0");
+        assert!(
+            target_ops_per_second > 0.0,
+            "target_ops_per_second must be > 0"
+        );
         let interval_ns = ((1_000_000_000.0 / target_ops_per_second) as u64).max(1);
         Self {
             stage,
@@ -150,7 +160,8 @@ impl<'a> SubMsPacedStage<'a> {
 
     /// Time the closure; latency is end-of-op minus *intended* start.
     pub fn time<F: FnOnce() -> R, R>(&mut self, f: F) -> R {
-        let intended_start = self.started_at + Duration::from_nanos(self.op_index * self.interval_ns);
+        let intended_start =
+            self.started_at + Duration::from_nanos(self.op_index * self.interval_ns);
         let now = Instant::now();
         if now < intended_start {
             thread::sleep(intended_start - now);
@@ -163,8 +174,12 @@ impl<'a> SubMsPacedStage<'a> {
         r
     }
 
-    pub fn op_index(&self) -> u64 { self.op_index }
-    pub fn interval_ns(&self) -> u64 { self.interval_ns }
+    pub fn op_index(&self) -> u64 {
+        self.op_index
+    }
+    pub fn interval_ns(&self) -> u64 {
+        self.interval_ns
+    }
 }
 
 /// A workload run. Owns raw samples + metadata only. Analysis and serialisation
@@ -216,12 +231,22 @@ impl SubMsPerfHarness {
         self.stages.iter().find(|s| s.name == name)
     }
 
-    pub fn stages(&self) -> &[SubMsStage] { &self.stages }
+    pub fn stages(&self) -> &[SubMsStage] {
+        &self.stages
+    }
 
-    pub fn workload(&self) -> &str { &self.workload }
-    pub fn lang(&self) -> &str { &self.lang }
-    pub fn inputs(&self) -> &BTreeMap<String, String> { &self.inputs }
-    pub fn meta(&self) -> &BTreeMap<String, String> { &self.meta }
+    pub fn workload(&self) -> &str {
+        &self.workload
+    }
+    pub fn lang(&self) -> &str {
+        &self.lang
+    }
+    pub fn inputs(&self) -> &BTreeMap<String, String> {
+        &self.inputs
+    }
+    pub fn meta(&self) -> &BTreeMap<String, String> {
+        &self.meta
+    }
 
     /// ISO-8601 seconds-precision timestamp captured at call time. Matches the
     /// on-disk JSON's `timestamp` field.
@@ -243,7 +268,9 @@ impl SubMsPerfHarness {
 }
 
 fn iso8601_now() -> String {
-    let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let d = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let secs = d.as_secs() as i64;
     let mut year = 1970i64;
     let mut days = secs / 86_400;
@@ -265,17 +292,30 @@ fn iso8601_now() -> String {
         days -= dm as i64;
     }
     let day = (days + 1) as u32;
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month, day, hour, minute, second)
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        year, month, day, hour, minute, second
+    )
 }
 
 fn year_days(y: i64) -> i64 {
-    if (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0) { 366 } else { 365 }
+    if (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0) {
+        366
+    } else {
+        365
+    }
 }
 fn month_days(y: i64, m: u32) -> u32 {
     match m {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
-        2 => if (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0) { 29 } else { 28 },
+        2 => {
+            if (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0) {
+                29
+            } else {
+                28
+            }
+        }
         _ => 0,
     }
 }

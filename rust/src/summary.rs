@@ -112,8 +112,10 @@ impl SubMsBenchDiff {
 
     /// The worst-regressing stage, or `None` if all stages stayed within the threshold.
     pub fn worst_stage(&self) -> Option<&SubMsStageDiff> {
-        self.stages
-            .iter()
-            .max_by(|a, b| a.worst_regression_pct.partial_cmp(&b.worst_regression_pct).unwrap_or(std::cmp::Ordering::Equal))
+        self.stages.iter().max_by(|a, b| {
+            a.worst_regression_pct
+                .partial_cmp(&b.worst_regression_pct)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     }
 }

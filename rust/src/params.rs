@@ -6,17 +6,23 @@ use crate::SubMsBenchParams;
 
 /// Parse a `usize`; falls back to `default` if missing or unparseable.
 pub fn parse_usize(args: &BTreeMap<String, String>, key: &str, default: usize) -> usize {
-    args.get(key).and_then(|v| v.parse().ok()).unwrap_or(default)
+    args.get(key)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 /// Parse a `u64`; falls back to `default` if missing or unparseable.
 pub fn parse_u64(args: &BTreeMap<String, String>, key: &str, default: u64) -> u64 {
-    args.get(key).and_then(|v| v.parse().ok()).unwrap_or(default)
+    args.get(key)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 /// Read a string; falls back to `default` if absent.
 pub fn parse_string(args: &BTreeMap<String, String>, key: &str, default: &str) -> String {
-    args.get(key).cloned().unwrap_or_else(|| default.to_string())
+    args.get(key)
+        .cloned()
+        .unwrap_or_else(|| default.to_string())
 }
 
 /// Accepts `1`/`true`/`on`/`yes` (and `0`/`false`/`off`/`no`) case-insensitively.
@@ -129,8 +135,11 @@ mod tests {
 
     #[test]
     fn bench_params_from_map_reads_overrides() {
-        let p =
-            SubMsBenchParams::from_map(&m([("entries", "1000"), ("warmup", "100"), ("seed", "42")]));
+        let p = SubMsBenchParams::from_map(&m([
+            ("entries", "1000"),
+            ("warmup", "100"),
+            ("seed", "42"),
+        ]));
         assert_eq!(p.entries, 1000);
         assert_eq!(p.warmup, 100);
         assert_eq!(p.seed, 42);

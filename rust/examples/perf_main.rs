@@ -21,9 +21,7 @@
 use std::hint::black_box;
 use std::io::{Cursor, Write};
 
-use subms::{
-    summarize, summary_to_json, SubMsBenchSummary, SubMsPerfHarness, SubMsTimer,
-};
+use subms::{SubMsBenchSummary, SubMsPerfHarness, SubMsTimer, summarize, summary_to_json};
 
 fn main() {
     let mut h = SubMsPerfHarness::new("subms-self-bench", "rust");
@@ -112,7 +110,11 @@ fn build_sample_harness(n: usize) -> SubMsPerfHarness {
     for i in 0..n as u64 {
         // Synthetic log-ish distribution: most samples small, a tail
         // exercises percentile sort + lookup.
-        let v = if i % 1000 == 0 { 10_000 + (i & 1023) } else { 100 + (i & 63) };
+        let v = if i % 1000 == 0 {
+            10_000 + (i & 1023)
+        } else {
+            100 + (i & 63)
+        };
         s.record(v);
     }
     h

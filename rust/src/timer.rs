@@ -137,9 +137,13 @@ impl SubMsTimer {
         end.duration_since(self.started_at).as_nanos() as u64
     }
 
-    pub fn name(&self) -> &str { &self.name }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 
-    pub fn checkpoints(&self) -> &[SubMsTimerCheckpoint] { &self.checkpoints }
+    pub fn checkpoints(&self) -> &[SubMsTimerCheckpoint] {
+        &self.checkpoints
+    }
 
     /// Print a fixed-width timeline. Byte-equivalent to Java's
     /// `SubMsTimer.print`.

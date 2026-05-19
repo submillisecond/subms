@@ -62,8 +62,16 @@ fn summarize_stage(name: &str, chronological: &[u64], include_samples: bool) -> 
     let p99 = percentile(&sorted, 0.99);
     let p999 = percentile(&sorted, 0.999);
     let max = sorted.last().copied().unwrap_or(0);
-    let mean = if n == 0 { 0 } else { sorted.iter().sum::<u64>() / n as u64 };
-    let samples_ns = if include_samples { Some(downsample(chronological)) } else { None };
+    let mean = if n == 0 {
+        0
+    } else {
+        sorted.iter().sum::<u64>() / n as u64
+    };
+    let samples_ns = if include_samples {
+        Some(downsample(chronological))
+    } else {
+        None
+    };
     SubMsStageSummary {
         name: name.to_string(),
         count: n,
@@ -189,7 +197,10 @@ pub fn assert_p99_under<T: SubMsAssertionTarget + ?Sized>(
 // ---------------------------------------------------------------------
 
 /// Alias of [`crate::recipe::benchmark`]; matches Java's `Bench.runBench`.
-pub fn run_bench<R: SubMsRecipe + ?Sized>(recipe: &R, params: &SubMsBenchParams) -> SubMsPerfHarness {
+pub fn run_bench<R: SubMsRecipe + ?Sized>(
+    recipe: &R,
+    params: &SubMsBenchParams,
+) -> SubMsPerfHarness {
     crate::recipe::benchmark(recipe, params)
 }
 
@@ -319,7 +330,10 @@ pub fn summarize_sweep(
     summaries: Vec<SubMsBenchSummary>,
     varied_input_key: Option<&str>,
 ) -> SubMsBenchSweep {
-    assert!(!summaries.is_empty(), "summarize_sweep requires at least one run");
+    assert!(
+        !summaries.is_empty(),
+        "summarize_sweep requires at least one run"
+    );
     SubMsBenchSweep {
         workload: summaries[0].workload.clone(),
         lang: summaries[0].lang.clone(),
@@ -347,7 +361,11 @@ pub fn print_sweep<W: Write>(sweep: &SubMsBenchSweep, out: &mut W) -> io::Result
         )?;
         for (i, run) in sweep.runs.iter().enumerate() {
             let label = match &sweep.varied_input_key {
-                Some(k) => run.inputs.get(k).cloned().unwrap_or_else(|| "?".to_string()),
+                Some(k) => run
+                    .inputs
+                    .get(k)
+                    .cloned()
+                    .unwrap_or_else(|| "?".to_string()),
                 None => format!("run {}", i + 1),
             };
             match run.stage(&stage.name) {
@@ -398,10 +416,7 @@ pub fn sweep_to_json<W: Write>(sweep: &SubMsBenchSweep, out: &mut W) -> io::Resu
 pub const DEFAULT_REGRESSION_THRESHOLD_PCT: f64 = 10.0;
 
 /// Build a typed diff between two summaries using the default 10 % threshold.
-pub fn diff_summary(
-    baseline: &SubMsBenchSummary,
-    candidate: &SubMsBenchSummary,
-) -> SubMsBenchDiff {
+pub fn diff_summary(baseline: &SubMsBenchSummary, candidate: &SubMsBenchSummary) -> SubMsBenchDiff {
     diff_summary_with(baseline, candidate, DEFAULT_REGRESSION_THRESHOLD_PCT)
 }
 
@@ -504,7 +519,8 @@ pub fn print_diff<W: Write>(diff: &SubMsBenchDiff, out: &mut W) -> io::Result<()
             } else {
                 "+inf%".to_string()
             };
-            let verdict = if m.delta_pct.is_finite() && m.delta_pct > diff.regression_threshold_pct {
+            let verdict = if m.delta_pct.is_finite() && m.delta_pct > diff.regression_threshold_pct
+            {
                 "REGRESSED"
             } else {
                 "ok"
@@ -529,10 +545,18 @@ pub fn print_diff<W: Write>(diff: &SubMsBenchDiff, out: &mut W) -> io::Result<()
         }
     }
     if !diff.baseline_only_stages.is_empty() {
-        writeln!(out, "  stages only in baseline:  {}", diff.baseline_only_stages.join(", "))?;
+        writeln!(
+            out,
+            "  stages only in baseline:  {}",
+            diff.baseline_only_stages.join(", ")
+        )?;
     }
     if !diff.candidate_only_stages.is_empty() {
-        writeln!(out, "  stages only in candidate: {}", diff.candidate_only_stages.join(", "))?;
+        writeln!(
+            out,
+            "  stages only in candidate: {}",
+            diff.candidate_only_stages.join(", ")
+        )?;
     }
     Ok(())
 }
@@ -555,7 +579,11 @@ fn append_diff_json(out: &mut String, diff: &SubMsBenchDiff) {
     out.push(',');
     json_kv_str(out, "lang", &diff.lang);
     out.push(',');
-    let _ = write!(out, "\"regression_threshold_pct\":{},", diff.regression_threshold_pct);
+    let _ = write!(
+        out,
+        "\"regression_threshold_pct\":{},",
+        diff.regression_threshold_pct
+    );
     let _ = write!(out, "\"has_regression\":{},", diff.has_regression());
     out.push_str("\"stages\":[");
     for (i, s) in diff.stages.iter().enumerate() {
@@ -565,7 +593,11 @@ fn append_diff_json(out: &mut String, diff: &SubMsBenchDiff) {
         out.push('{');
         json_kv_str(out, "stage", &s.stage);
         out.push(',');
-        let _ = write!(out, "\"worst_regression_pct\":{},", json_number(s.worst_regression_pct));
+        let _ = write!(
+            out,
+            "\"worst_regression_pct\":{},",
+            json_number(s.worst_regression_pct)
+        );
         out.push_str("\"metrics\":[");
         for (j, m) in s.metrics.iter().enumerate() {
             if j > 0 {
@@ -604,7 +636,11 @@ fn append_diff_json(out: &mut String, diff: &SubMsBenchDiff) {
 /// Render a finite f64 as a JSON number; non-finite values become `null`
 /// (JSON has no inf/NaN literal).
 fn json_number(d: f64) -> String {
-    if d.is_finite() { d.to_string() } else { "null".to_string() }
+    if d.is_finite() {
+        d.to_string()
+    } else {
+        "null".to_string()
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -648,7 +684,9 @@ mod tests {
 
     struct FixedSubMsRecipe;
     impl SubMsRecipe for FixedSubMsRecipe {
-        fn name(&self) -> &str { "fixed-recipe" }
+        fn name(&self) -> &str {
+            "fixed-recipe"
+        }
         fn run(&self, h: &mut SubMsPerfHarness, _params: &SubMsBenchParams) {
             let s = h.stage("step", 4);
             s.record(100);
@@ -697,7 +735,10 @@ mod tests {
         let s = summarize_lean(&h);
         assert_p99_under(
             &s,
-            &[SubMsBenchAssertion { stage: "step", p99_ns_max: 400 }],
+            &[SubMsBenchAssertion {
+                stage: "step",
+                p99_ns_max: 400,
+            }],
         )
         .expect("p99=400 should satisfy max=400");
     }
@@ -709,7 +750,10 @@ mod tests {
         let s = summarize_lean(&h);
         let err = assert_p99_under(
             &s,
-            &[SubMsBenchAssertion { stage: "step", p99_ns_max: 399 }],
+            &[SubMsBenchAssertion {
+                stage: "step",
+                p99_ns_max: 399,
+            }],
         )
         .unwrap_err();
         assert!(err.contains("step"));
@@ -724,7 +768,10 @@ mod tests {
         let s = summarize_lean(&h);
         let err = assert_p99_under(
             &s,
-            &[SubMsBenchAssertion { stage: "ghost", p99_ns_max: 1 }],
+            &[SubMsBenchAssertion {
+                stage: "ghost",
+                p99_ns_max: 1,
+            }],
         )
         .unwrap_err();
         assert!(err.contains("ghost"));
@@ -745,8 +792,16 @@ mod tests {
     #[test]
     fn run_sweep_runs_recipe_once_per_params_set() {
         let params = vec![
-            SubMsBenchParams { entries: 4, warmup: 0, seed: 0 },
-            SubMsBenchParams { entries: 4, warmup: 0, seed: 1 },
+            SubMsBenchParams {
+                entries: 4,
+                warmup: 0,
+                seed: 0,
+            },
+            SubMsBenchParams {
+                entries: 4,
+                warmup: 0,
+                seed: 1,
+            },
         ];
         let sweep = run_sweep(&FixedSubMsRecipe, &params, Some("seed"));
         assert_eq!(sweep.runs.len(), 2);
@@ -770,8 +825,16 @@ mod tests {
     #[test]
     fn print_sweep_pivots_by_stage_and_labels_rows() {
         let params = vec![
-            SubMsBenchParams { entries: 4, warmup: 0, seed: 0 },
-            SubMsBenchParams { entries: 4, warmup: 0, seed: 0 },
+            SubMsBenchParams {
+                entries: 4,
+                warmup: 0,
+                seed: 0,
+            },
+            SubMsBenchParams {
+                entries: 4,
+                warmup: 0,
+                seed: 0,
+            },
         ];
         let sweep = run_sweep(&FixedSubMsRecipe, &params, None);
         let mut buf = Vec::new();
@@ -785,8 +848,16 @@ mod tests {
     #[test]
     fn sweep_to_json_emits_array() {
         let params = vec![
-            SubMsBenchParams { entries: 4, warmup: 0, seed: 0 },
-            SubMsBenchParams { entries: 4, warmup: 0, seed: 0 },
+            SubMsBenchParams {
+                entries: 4,
+                warmup: 0,
+                seed: 0,
+            },
+            SubMsBenchParams {
+                entries: 4,
+                warmup: 0,
+                seed: 0,
+            },
         ];
         let sweep = run_sweep(&FixedSubMsRecipe, &params, Some("seed"));
         let mut buf = Vec::new();
@@ -799,25 +870,46 @@ mod tests {
 
     // ---- diff tests -----------------------------------------------------
 
-    struct ExplicitRecipe { values: Vec<u64> }
+    struct ExplicitRecipe {
+        values: Vec<u64>,
+    }
     impl SubMsRecipe for ExplicitRecipe {
-        fn name(&self) -> &str { "explicit" }
+        fn name(&self) -> &str {
+            "explicit"
+        }
         fn run(&self, h: &mut SubMsPerfHarness, _p: &SubMsBenchParams) {
             let s = h.stage("put", self.values.len());
-            for v in &self.values { s.record(*v); }
+            for v in &self.values {
+                s.record(*v);
+            }
         }
     }
 
     #[test]
     fn diff_summary_computes_per_metric_deltas() {
         let p = SubMsBenchParams::default();
-        let base = summarize_lean(&run_bench(&ExplicitRecipe { values: vec![100, 200, 300, 400] }, &p));
-        let cand = summarize_lean(&run_bench(&ExplicitRecipe { values: vec![110, 220, 330, 440] }, &p));
+        let base = summarize_lean(&run_bench(
+            &ExplicitRecipe {
+                values: vec![100, 200, 300, 400],
+            },
+            &p,
+        ));
+        let cand = summarize_lean(&run_bench(
+            &ExplicitRecipe {
+                values: vec![110, 220, 330, 440],
+            },
+            &p,
+        ));
         let d = diff_summary(&base, &cand);
         assert_eq!(d.stages.len(), 1);
         let put = &d.stages[0];
         for m in &put.metrics {
-            assert!((m.delta_pct - 10.0).abs() < 1e-9, "{}: {}", m.metric, m.delta_pct);
+            assert!(
+                (m.delta_pct - 10.0).abs() < 1e-9,
+                "{}: {}",
+                m.metric,
+                m.delta_pct
+            );
         }
         assert!((put.worst_regression_pct - 10.0).abs() < 1e-9);
     }
@@ -825,8 +917,18 @@ mod tests {
     #[test]
     fn diff_summary_flags_regression_above_threshold() {
         let p = SubMsBenchParams::default();
-        let base = summarize_lean(&run_bench(&ExplicitRecipe { values: vec![100, 200, 300, 400] }, &p));
-        let cand = summarize_lean(&run_bench(&ExplicitRecipe { values: vec![200, 400, 600, 800] }, &p));
+        let base = summarize_lean(&run_bench(
+            &ExplicitRecipe {
+                values: vec![100, 200, 300, 400],
+            },
+            &p,
+        ));
+        let cand = summarize_lean(&run_bench(
+            &ExplicitRecipe {
+                values: vec![200, 400, 600, 800],
+            },
+            &p,
+        ));
         let d = diff_summary_with(&base, &cand, 50.0);
         assert!(d.has_regression());
         assert_eq!(d.worst_stage().unwrap().stage, "put");
@@ -835,8 +937,18 @@ mod tests {
     #[test]
     fn diff_summary_does_not_flag_when_all_improved() {
         let p = SubMsBenchParams::default();
-        let base = summarize_lean(&run_bench(&ExplicitRecipe { values: vec![200, 400, 600, 800] }, &p));
-        let cand = summarize_lean(&run_bench(&ExplicitRecipe { values: vec![100, 200, 300, 400] }, &p));
+        let base = summarize_lean(&run_bench(
+            &ExplicitRecipe {
+                values: vec![200, 400, 600, 800],
+            },
+            &p,
+        ));
+        let cand = summarize_lean(&run_bench(
+            &ExplicitRecipe {
+                values: vec![100, 200, 300, 400],
+            },
+            &p,
+        ));
         let d = diff_summary_with(&base, &cand, 10.0);
         assert!(!d.has_regression());
     }
@@ -844,8 +956,18 @@ mod tests {
     #[test]
     fn print_diff_emits_table_with_verdict_column() {
         let p = SubMsBenchParams::default();
-        let base = summarize_lean(&run_bench(&ExplicitRecipe { values: vec![100, 200, 300, 400] }, &p));
-        let cand = summarize_lean(&run_bench(&ExplicitRecipe { values: vec![200, 400, 600, 800] }, &p));
+        let base = summarize_lean(&run_bench(
+            &ExplicitRecipe {
+                values: vec![100, 200, 300, 400],
+            },
+            &p,
+        ));
+        let cand = summarize_lean(&run_bench(
+            &ExplicitRecipe {
+                values: vec![200, 400, 600, 800],
+            },
+            &p,
+        ));
         let d = diff_summary_with(&base, &cand, 50.0);
         let mut buf = Vec::new();
         print_diff(&d, &mut buf).unwrap();
@@ -858,8 +980,18 @@ mod tests {
     #[test]
     fn diff_to_json_emits_expected_keys() {
         let p = SubMsBenchParams::default();
-        let base = summarize_lean(&run_bench(&ExplicitRecipe { values: vec![100, 200, 300, 400] }, &p));
-        let cand = summarize_lean(&run_bench(&ExplicitRecipe { values: vec![110, 220, 330, 440] }, &p));
+        let base = summarize_lean(&run_bench(
+            &ExplicitRecipe {
+                values: vec![100, 200, 300, 400],
+            },
+            &p,
+        ));
+        let cand = summarize_lean(&run_bench(
+            &ExplicitRecipe {
+                values: vec![110, 220, 330, 440],
+            },
+            &p,
+        ));
         let d = diff_summary_with(&base, &cand, 5.0);
         let mut buf = Vec::new();
         diff_to_json(&d, &mut buf).unwrap();

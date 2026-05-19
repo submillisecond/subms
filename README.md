@@ -165,10 +165,11 @@ at your option. The MIT-only fallback is also at [`LICENSE`](LICENSE) for toolin
 
 PRs welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the dev flow + the "Rust + Java parity" rule (changing one side requires changing the other).
 
-## Dogfooding
+## Self-bench (the harness gating itself)
 
-This repo runs its own ecosystem as a working demo. Every PR fires the full
-chain:
+This repo runs its own ecosystem against itself - every PR exercises the
+full chain so the same setup downstream consumers use is validated on
+every change:
 
 1. **`rust/examples/perf_main.rs`** and **`java/.../bench/PerfMain.java`** run a self-bench that exercises the harness's hot paths (`stage.time(...)`, `summarize`, `summary_to_json`, `diff_summary`).
 2. **[`subms-action-bench`](https://github.com/submillisecond/subms-action-bench)** captures the candidate JSON; the base ref's JSON is rebuilt from a git worktree.
