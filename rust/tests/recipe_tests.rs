@@ -1,4 +1,4 @@
-use subms::{benchmark, SubMsBenchParams, SubMsLcg, SubMsPerfHarness, SubMsRecipe};
+use subms::{SubMsBenchParams, SubMsLcg, SubMsPerfHarness, SubMsRecipe, benchmark};
 
 struct NoopRecipe;
 

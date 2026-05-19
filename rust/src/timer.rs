@@ -152,9 +152,18 @@ impl SubMsTimer {
     ///   served *             +1.3us       3.2us
     /// ```
     pub fn print<W: Write>(&self, out: &mut W) -> io::Result<()> {
-        writeln!(out, "timer \"{}\"  total={}", self.name, format_ns(self.elapsed_ns()))?;
+        writeln!(
+            out,
+            "timer \"{}\"  total={}",
+            self.name,
+            format_ns(self.elapsed_ns())
+        )?;
         for cp in &self.checkpoints {
-            let label = if cp.is_stop { format!("{} *", cp.label) } else { cp.label.clone() };
+            let label = if cp.is_stop {
+                format!("{} *", cp.label)
+            } else {
+                cp.label.clone()
+            };
             writeln!(
                 out,
                 "  {:<18}  +{:>8}   {:>8}",

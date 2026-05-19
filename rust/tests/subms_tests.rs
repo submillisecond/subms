@@ -63,5 +63,10 @@ fn paced_stage_folds_queue_delay_into_latency() {
     assert!(samples[0] < 1_000_000, "first: {}", samples[0]);
     // Second op should reflect the ~2ms slot delay (CO correction).
     assert!(samples[1] > 1_000_000, "second: {}", samples[1]);
-    assert!(samples[1] > samples[0] + 500_000, "delta: first={} second={}", samples[0], samples[1]);
+    assert!(
+        samples[1] > samples[0] + 500_000,
+        "delta: first={} second={}",
+        samples[0],
+        samples[1]
+    );
 }
