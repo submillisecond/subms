@@ -509,8 +509,8 @@ pub fn print_diff<W: Write>(diff: &SubMsBenchDiff, out: &mut W) -> io::Result<()
     )?;
     writeln!(
         out,
-        "  {:<12}  {:<7}  {:>9}  {:>9}  {:>9}  {:>9}  {}",
-        "stage", "metric", "baseline", "candidate", "delta", "%delta", "verdict"
+        "  {:<12}  {:<7}  {:>9}  {:>9}  {:>9}  {:>9}  verdict",
+        "stage", "metric", "baseline", "candidate", "delta", "%delta"
     )?;
     for stage in &diff.stages {
         for m in &stage.metrics {
