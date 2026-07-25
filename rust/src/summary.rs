@@ -11,9 +11,14 @@ use std::collections::BTreeMap;
 /// Per-stage summary. The counterpart of one `stages.<name>` entry in the
 /// subms JSON contract.
 ///
-/// `samples_ns` carries the downsampled (max-500) chronological timeline
-/// emitted by [`crate::summarize`]; [`crate::summarize_lean`] leaves it `None`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `samples_ns` carries the downsampled chronological timeline emitted by
+/// [`crate::summarize`], capped at the harness's `sample_cap` (default 500;
+/// raise it to keep more points); [`crate::summarize_lean`] leaves it `None`.
+///
+/// Does NOT derive `Eq` because `jitter_score: f64` can be NaN. Use
+/// `PartialEq` instead, and prefer comparing the integer fields explicitly
+/// in tests rather than `assert_eq!`-ing the whole struct.
+#[derive(Clone, Debug, PartialEq)]
 pub struct SubMsStageSummary {
     pub name: String,
     pub count: usize,
@@ -22,6 +27,28 @@ pub struct SubMsStageSummary {
     pub p999_ns: u64,
     pub max_ns: u64,
     pub mean_ns: u64,
+    /// Sample-standard-deviation across the (post-warmup-skip) timings.
+    /// `0` when count < 2. Added in subms 0.4.0; the JSON contract emits
+    /// it as `stddev_ns` and older readers ignore the field.
+    pub stddev_ns: u64,
+    /// Log2-spaced histogram of the chronological samples. 64 buckets
+    /// covering 1ns .. ~18.4s (2^0 .. 2^64 ns). Each entry is the count
+    /// of samples whose value falls in `[2^i, 2^(i+1))` nanoseconds.
+    /// Empty (all-zero) when the stage has no samples. The full CDF can
+    /// be reconstructed by cumulative sum across the array.
+    ///
+    /// Added in subms 0.5.0; the JSON contract emits it as
+    /// `cdf_buckets_ns` and older readers ignore the field.
+    pub cdf_buckets_ns: Vec<u64>,
+    /// Jitter score in `[0.0, 1.0]`: coefficient of variation of the
+    /// per-window mean across non-overlapping 32-sample windows,
+    /// clamped. 0 = perfectly stable measurement environment, 1+ = the
+    /// underlying noise floor dominates the signal. Useful for spotting
+    /// bench runs where the *measurement rig* was unstable, separate
+    /// from the algorithm's own tail.
+    ///
+    /// Added in subms 0.5.0.
+    pub jitter_score: f64,
     pub samples_ns: Option<Vec<u64>>,
 }
 
@@ -33,6 +60,15 @@ pub struct SubMsBenchSummary {
     pub workload: String,
     pub lang: String,
     pub timestamp: String,
+    /// CPU core the bench last executed on (Linux `/proc/self/stat` field 39),
+    /// or `None` off Linux. Makes each run self-describing about core placement -
+    /// pair with `cpu_affinity` to tell an isolated/pinned core from a migratable
+    /// one. Added in subms 0.5.3; the JSON contract emits it under `cpu`.
+    pub cpu_core: Option<u32>,
+    /// The process's allowed-CPU affinity list (Linux `Cpus_allowed_list`), e.g.
+    /// `"1"` (single core -> pinned/isolated) or `"0-1"` (migratable). `None`
+    /// off Linux.
+    pub cpu_affinity: Option<String>,
     pub inputs: BTreeMap<String, String>,
     pub meta: BTreeMap<String, String>,
     pub stages: Vec<SubMsStageSummary>,

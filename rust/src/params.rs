@@ -36,13 +36,14 @@ pub fn parse_bool(args: &BTreeMap<String, String>, key: &str, default: bool) -> 
 }
 
 impl SubMsBenchParams {
-    /// Reads `entries` / `warmup` / `seed`, defaulting any missing key.
+    /// Reads `entries` / `warmup` / `seed` / `sample_cap`, defaulting any missing key.
     pub fn from_map(args: &BTreeMap<String, String>) -> Self {
         let d = Self::default();
         Self {
             entries: parse_usize(args, "entries", d.entries),
             warmup: parse_usize(args, "warmup", d.warmup),
             seed: parse_u64(args, "seed", d.seed),
+            sample_cap: parse_usize(args, "sample_cap", d.sample_cap),
         }
     }
 

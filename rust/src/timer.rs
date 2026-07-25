@@ -29,9 +29,30 @@
 //! `com.submillisecond.perf.SubMsTimer`.
 
 use std::io::{self, Write};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use crate::bench::format_ns;
+
+/// Opaque starting-tick handle. Returned by [`SubMsTimer::tick`]; the only
+/// useful operation is [`SubMsTick::elapsed_ns`] later. Zero-cost wrapper
+/// around `Instant` (`repr(transparent)`).
+///
+/// Use this everywhere a recipe or harness wants the
+/// "snapshot now / do work / read delta" pattern - it routes every
+/// platform-clock read through `SubMsTimer` so we can swap to a faster
+/// path (rdtsc, cntvct_el0, vDSO) in one place.
+#[derive(Copy, Clone, Debug)]
+#[repr(transparent)]
+pub struct SubMsTick(Instant);
+
+impl SubMsTick {
+    /// Nanoseconds since this tick was taken.
+    #[inline]
+    pub fn elapsed_ns(self) -> u64 {
+        self.0.elapsed().as_nanos() as u64
+    }
+}
 
 /// A single named milestone captured by [`SubMsTimer::mark`] /
 /// [`SubMsTimer::lap`] / [`SubMsTimer::stop`].
@@ -58,6 +79,46 @@ pub struct SubMsTimer {
 }
 
 impl SubMsTimer {
+    /// Single source of truth for monotonic-clock reads across the
+    /// subms harness. Returns nanoseconds since a process-local epoch
+    /// (snapshotted on first call); meaningful only as a delta against
+    /// another `nanos_now()` reading.
+    ///
+    /// Prefer [`SubMsTimer::tick`] + [`SubMsTick::elapsed_ns`] in hot
+    /// loops - it's one fewer atomic load + one fewer arithmetic op
+    /// because we don't normalise against the process epoch on each
+    /// call.
+    #[inline]
+    pub fn nanos_now() -> u64 {
+        static EPOCH: OnceLock<Instant> = OnceLock::new();
+        let epoch = EPOCH.get_or_init(Instant::now);
+        epoch.elapsed().as_nanos() as u64
+    }
+
+    /// Snapshot the monotonic clock for the "start tick / do work /
+    /// read delta" pattern. Recipes use this inside their bench loops
+    /// instead of `std::time::Instant::now()`. Cost is identical to a
+    /// raw `Instant::now()` (the return is a `#[repr(transparent)]`
+    /// wrapper).
+    #[inline]
+    pub fn tick() -> SubMsTick {
+        SubMsTick(Instant::now())
+    }
+
+    /// Time a closure. Returns the closure result and elapsed
+    /// nanoseconds. Convenient when the call is on the hot path and
+    /// the caller doesn't care about retaining a tick handle.
+    #[inline]
+    pub fn measure_ns<F, T>(f: F) -> (T, u64)
+    where
+        F: FnOnce() -> T,
+    {
+        let t0 = Instant::now();
+        let r = f();
+        let elapsed = t0.elapsed().as_nanos() as u64;
+        (r, elapsed)
+    }
+
     /// Autostart unnamed timer.
     pub fn unnamed() -> Self {
         Self::new("")
@@ -243,5 +304,69 @@ mod tests {
         assert!(out.contains("timer \"parse\""));
         assert!(out.contains("a"));
         assert!(out.contains("done *"));
+    }
+
+    // ---------------- static clock API ----------------
+
+    #[test]
+    fn nanos_now_returns_positive_increasing() {
+        let a = SubMsTimer::nanos_now();
+        thread::sleep(Duration::from_millis(1));
+        let b = SubMsTimer::nanos_now();
+        assert!(b > a, "monotonic: {} -> {}", a, b);
+    }
+
+    #[test]
+    fn tick_and_elapsed_ns_capture_positive_interval() {
+        let t = SubMsTimer::tick();
+        thread::sleep(Duration::from_millis(2));
+        let ns = t.elapsed_ns();
+        assert!(ns >= 1_000_000, "should be >= 1ms after sleep: {}", ns);
+        assert!(
+            ns < 100_000_000,
+            "shouldn't be > 100ms on a healthy box: {}",
+            ns
+        );
+    }
+
+    #[test]
+    fn tick_is_reusable_for_multiple_reads() {
+        let t = SubMsTimer::tick();
+        thread::sleep(Duration::from_millis(1));
+        let a = t.elapsed_ns();
+        thread::sleep(Duration::from_millis(1));
+        let b = t.elapsed_ns();
+        assert!(b >= a, "second read >= first: {} -> {}", a, b);
+    }
+
+    #[test]
+    fn measure_ns_returns_elapsed_and_runs_closure() {
+        let mut counter = 0;
+        let ((), elapsed) = SubMsTimer::measure_ns(|| {
+            counter += 1;
+            thread::sleep(Duration::from_millis(1));
+        });
+        assert_eq!(counter, 1, "closure should run exactly once");
+        assert!(
+            elapsed >= 500_000,
+            "elapsed should be at least 0.5ms: {}",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn measure_ns_propagates_closure_return_value() {
+        let (val, _ns) = SubMsTimer::measure_ns(|| 42);
+        assert_eq!(val, 42);
+    }
+
+    #[test]
+    fn measure_ns_returns_zero_or_positive_for_noop() {
+        let (_, elapsed) = SubMsTimer::measure_ns(|| {});
+        assert!(
+            elapsed < 1_000_000,
+            "no-op shouldn't take >= 1ms: {}",
+            elapsed
+        );
     }
 }

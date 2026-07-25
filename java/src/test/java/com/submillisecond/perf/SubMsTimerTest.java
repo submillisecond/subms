@@ -102,4 +102,68 @@ final class SubMsTimerTest {
         long e2 = t.elapsedNs();
         assertTrue(e2 > e1);
     }
+
+    // ---------------- static clock API ----------------
+
+    @Test
+    void nanosNowReturnsPositiveIncreasingValue() throws Exception {
+        long a = SubMsTimer.nanosNow();
+        Thread.sleep(1);
+        long b = SubMsTimer.nanosNow();
+        assertTrue(a >= 0, "nanosNow >= 0");
+        assertTrue(b > a, "nanosNow monotonic: " + a + " -> " + b);
+    }
+
+    @Test
+    void tickAndElapsedNsCapturePositiveInterval() throws Exception {
+        SubMsTimer.SubMsTick t = SubMsTimer.tick();
+        Thread.sleep(2);
+        long ns = t.elapsedNs();
+        assertTrue(ns >= 1_000_000L, "should be >= 1ms after Thread.sleep(2): " + ns);
+        assertTrue(ns < 100_000_000L, "shouldn't be > 100ms on a healthy box: " + ns);
+    }
+
+    @Test
+    void tickIsReusableForMultipleReads() throws Exception {
+        SubMsTimer.SubMsTick t = SubMsTimer.tick();
+        Thread.sleep(1);
+        long a = t.elapsedNs();
+        Thread.sleep(1);
+        long b = t.elapsedNs();
+        assertTrue(b >= a, "second read >= first: " + a + " -> " + b);
+    }
+
+    @Test
+    void measureNsReturnsElapsedAndRunsRunnable() throws Exception {
+        int[] sink = { 0 };
+        long elapsed = SubMsTimer.measureNs(() -> {
+            sink[0]++;
+            try { Thread.sleep(1); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        });
+        assertEquals(1, sink[0], "runnable should run exactly once");
+        assertTrue(elapsed >= 500_000L, "elapsed should be at least 0.5ms: " + elapsed);
+    }
+
+    @Test
+    void measureNsReturnsZeroOrPositiveForNoOp() {
+        long elapsed = SubMsTimer.measureNs(() -> {});
+        assertTrue(elapsed >= 0L, "no-op should be >= 0ns: " + elapsed);
+        assertTrue(elapsed < 1_000_000L, "no-op shouldn't take >= 1ms: " + elapsed);
+    }
+
+    @Test
+    void stopwatchUsesNanosNowSoMixingClockReadsIsCoherent() throws Exception {
+        // mark() should report sinceStart consistent with an external
+        // nanosNow() bracketing the timer's lifetime.
+        long before = SubMsTimer.nanosNow();
+        SubMsTimer t = new SubMsTimer("mix");
+        Thread.sleep(1);
+        long sinceStart = t.mark("m");
+        long after = SubMsTimer.nanosNow();
+        long bracket = after - before;
+        // The bracket includes timer construction overhead, so sinceStart
+        // must be <= bracket. Allows the equality case if both calls land
+        // in the same QPC tick on Windows.
+        assertTrue(sinceStart <= bracket, "sinceStart " + sinceStart + " > bracket " + bracket);
+    }
 }

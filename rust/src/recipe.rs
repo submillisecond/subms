@@ -12,6 +12,11 @@ pub struct SubMsBenchParams {
     pub warmup: usize,
     /// Deterministic RNG seed.
     pub seed: u64,
+    /// Max points kept in each stage's emitted `samples_ns` timeline
+    /// (evenly-spaced downsample of the full `entries` measurements).
+    /// Default 500; raise it (e.g. 5000) when downstream tooling recomputes
+    /// percentiles from the stored timeline and needs a denser sample.
+    pub sample_cap: usize,
 }
 
 impl Default for SubMsBenchParams {
@@ -20,6 +25,7 @@ impl Default for SubMsBenchParams {
             entries: 50_000,
             warmup: 5_000,
             seed: 0,
+            sample_cap: 500,
         }
     }
 }
@@ -37,6 +43,7 @@ pub fn benchmark<R: SubMsRecipe + ?Sized>(
     h.input("entries", &params.entries.to_string());
     h.input("warmup", &params.warmup.to_string());
     h.input("seed", &params.seed.to_string());
+    h.set_sample_cap(params.sample_cap);
     recipe.run(&mut h, params);
     h
 }

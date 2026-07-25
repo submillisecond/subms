@@ -21,6 +21,7 @@ fn benchmark_produces_expected_json_shape() {
         entries: 50,
         warmup: 0,
         seed: 0,
+        sample_cap: 500,
     };
     let h = benchmark(&NoopRecipe, &params);
 

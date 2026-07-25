@@ -1,9 +1,9 @@
 [package]
 name = "subms"
-version = "0.3.0"
+version = "0.5.2"
 edition = "2024"
 rust-version = "1.85"
-authors = ["Kieran Smith <kieran@kieransmith.tech>"]
+authors = ["Kieran Smith <oss@submillisecond.com>"]
 description = "The sub-millisecond perf harness for Rust. Zero-dependency std-only library that records timed samples per stage, computes percentiles, supports coordinated-omission correction, runs scale sweeps, and emits a stable JSON contract. Byte-equivalent to the Java sibling com.submillisecond:subms."
 license = "MIT OR Apache-2.0"
 readme = "README.md"
@@ -17,7 +17,10 @@ categories = ["development-tools::profiling", "development-tools::testing"]
 name = "subms"
 path = "src/lib.rs"
 
-# Zero external dependencies - std only. JUnit's Rust analogue (`#[test]`) is built-in.
+# Zero external dependencies - std only. Recipes downstream pick up
+# `subms` and nothing else; the rich-stats surface lives in the
+# sibling `subms-stats` crate which consumers add explicitly when
+# they want it.
 [dependencies]
 
 [dev-dependencies]

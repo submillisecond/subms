@@ -18,7 +18,7 @@ use std::io::{self, Write};
 
 use crate::{
     SubMsBenchDiff, SubMsBenchParams, SubMsBenchSummary, SubMsBenchSweep, SubMsMetricDiff,
-    SubMsPerfHarness, SubMsRecipe, SubMsStageDiff, SubMsStageSummary,
+    SubMsPerfHarness, SubMsRecipe, SubMsStageDiff, SubMsStageSummary, stats,
 };
 
 // ---------------------------------------------------------------------
@@ -26,71 +26,215 @@ use crate::{
 // ---------------------------------------------------------------------
 
 /// Build a [`SubMsBenchSummary`] from the harness. Includes the downsampled
-/// (max-500) chronological per-stage timeline. Order matches stage
+/// chronological per-stage timeline, capped at the harness's
+/// [`SubMsPerfHarness::sample_cap`] (default 500). Order matches stage
 /// registration.
+///
+/// If the harness has a [`crate::SubMsObserver`] registered, fires
+/// `on_summarize` exactly once with the produced summary before returning.
+/// Other summary variants (`summarize_lean`, `summarize_skipping`,
+/// `summarize_windowed`) do NOT fire the observer - they're considered
+/// internal re-summarisations rather than the canonical post-bench result.
 pub fn summarize(h: &SubMsPerfHarness) -> SubMsBenchSummary {
-    summarize_internal(h, /*include_samples*/ true)
+    let summary = summarize_internal(
+        h,
+        /*include_samples*/ true,
+        /*skip_warmup*/ 0,
+        h.sample_cap(),
+    );
+    if let Some(obs) = h.observer() {
+        obs.on_summarize(&summary);
+    }
+    summary
 }
 
 /// Same as [`summarize`] but drops the per-stage sample arrays. Use when you
 /// only need count + percentiles + mean.
 pub fn summarize_lean(h: &SubMsPerfHarness) -> SubMsBenchSummary {
-    summarize_internal(h, /*include_samples*/ false)
+    summarize_internal(
+        h,
+        /*include_samples*/ false,
+        /*skip_warmup*/ 0,
+        h.sample_cap(),
+    )
 }
 
-fn summarize_internal(h: &SubMsPerfHarness, include_samples: bool) -> SubMsBenchSummary {
+/// Same as [`summarize`] but discards the first `skip_warmup` samples per
+/// stage before computing percentiles + mean + stddev. Use when the
+/// recipe can't insert a pre-pass warmup itself (e.g. a JIT- or cache-
+/// cold first ~1k operations would skew p99).
+///
+/// `samples_ns` in the output reflects the trimmed timeline.
+pub fn summarize_skipping(h: &SubMsPerfHarness, skip_warmup: usize) -> SubMsBenchSummary {
+    summarize_internal(
+        h,
+        /*include_samples*/ true,
+        skip_warmup,
+        h.sample_cap(),
+    )
+}
+
+/// Slice each stage's chronological sample buffer into `window` equal-sized
+/// chunks and produce a [`SubMsBenchSummary`] per chunk. Useful for
+/// rolling-window p99 analysis - "how did p99 evolve across the run?"
+///
+/// Windows are sample-count-based, not wall-clock-based, since the harness
+/// doesn't record per-sample timestamps. For wall-clock windows, ensure
+/// the workload runs at a roughly steady rate; then the i-th window
+/// approximates the i-th time slice.
+///
+/// Returns an empty vector if the harness has zero stages.
+pub fn summarize_windowed(h: &SubMsPerfHarness, window: usize) -> Vec<SubMsBenchSummary> {
+    let window = window.max(1);
+    // Find the longest stage; that determines how many windows we emit.
+    let max_len = h
+        .stages()
+        .iter()
+        .map(|s| s.samples().len())
+        .max()
+        .unwrap_or(0);
+    if max_len == 0 {
+        return Vec::new();
+    }
+    let n_windows = max_len.div_ceil(window);
+    let mut out = Vec::with_capacity(n_windows);
+    for w in 0..n_windows {
+        let start = w * window;
+        let stages = h
+            .stages()
+            .iter()
+            .map(|s| {
+                let samples = s.samples();
+                let end = (start + window).min(samples.len());
+                let slice = if start < samples.len() {
+                    &samples[start..end]
+                } else {
+                    &[][..]
+                };
+                summarize_stage(
+                    s.name(),
+                    slice,
+                    /*include_samples*/ false,
+                    /*sample_cap*/ 500,
+                )
+            })
+            .collect();
+        out.push(SubMsBenchSummary {
+            workload: h.workload().to_string(),
+            lang: h.lang().to_string(),
+            timestamp: h.timestamp(),
+            cpu_core: None,
+            cpu_affinity: None,
+            inputs: {
+                let mut m = clone_map(h.inputs());
+                m.insert("__window_index".to_string(), w.to_string());
+                m.insert("__window_size".to_string(), window.to_string());
+                m
+            },
+            meta: clone_map(h.meta()),
+            stages,
+        });
+    }
+    out
+}
+
+// percentile_sweep moved to `crate::stats::percentile_sweep`. Recipes
+// previously importing it from this module can keep using `subms::percentile_sweep`
+// via the top-level re-export.
+
+fn summarize_internal(
+    h: &SubMsPerfHarness,
+    include_samples: bool,
+    skip_warmup: usize,
+    sample_cap: usize,
+) -> SubMsBenchSummary {
     let stages = h
         .stages()
         .iter()
-        .map(|s| summarize_stage(s.name(), s.samples(), include_samples))
+        .map(|s| {
+            let trimmed = if skip_warmup > 0 && s.samples().len() > skip_warmup {
+                &s.samples()[skip_warmup..]
+            } else {
+                s.samples()
+            };
+            summarize_stage(s.name(), trimmed, include_samples, sample_cap)
+        })
         .collect();
+    let (cpu_core, cpu_affinity) = cpu_placement();
     SubMsBenchSummary {
         workload: h.workload().to_string(),
         lang: h.lang().to_string(),
         timestamp: h.timestamp(),
+        cpu_core,
+        cpu_affinity,
         inputs: clone_map(h.inputs()),
         meta: clone_map(h.meta()),
         stages,
     }
 }
 
-fn summarize_stage(name: &str, chronological: &[u64], include_samples: bool) -> SubMsStageSummary {
+/// Best-effort per-run CPU placement from Linux `/proc`. Returns
+/// (last-run core, allowed-affinity list). `(None, None)` off Linux or on any
+/// read/parse failure - the harness never fails a bench over provenance.
+fn cpu_placement() -> (Option<u32>, Option<String>) {
+    let core = std::fs::read_to_string("/proc/self/stat")
+        .ok()
+        .and_then(|s| {
+            // Fields after the final ')' (which closes `comm`) begin at field 3, so
+            // field 39 (`processor`, the last core the task ran on) is index 36.
+            let start = s.rfind(')').map(|i| i + 1)?;
+            s[start..]
+                .split_whitespace()
+                .nth(36)
+                .and_then(|v| v.parse::<u32>().ok())
+        });
+    let affinity = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix("Cpus_allowed_list:"))
+                .map(|v| v.trim().to_string())
+        });
+    (core, affinity)
+}
+
+fn summarize_stage(
+    name: &str,
+    chronological: &[u64],
+    include_samples: bool,
+    sample_cap: usize,
+) -> SubMsStageSummary {
     let mut sorted = chronological.to_vec();
     sorted.sort_unstable();
-    let n = sorted.len();
-    let p50 = percentile(&sorted, 0.50);
-    let p99 = percentile(&sorted, 0.99);
-    let p999 = percentile(&sorted, 0.999);
-    let max = sorted.last().copied().unwrap_or(0);
-    let mean = if n == 0 {
-        0
-    } else {
-        sorted.iter().sum::<u64>() / n as u64
-    };
     let samples_ns = if include_samples {
-        Some(downsample(chronological))
+        Some(downsample(chronological, sample_cap))
     } else {
         None
     };
     SubMsStageSummary {
         name: name.to_string(),
-        count: n,
-        p50_ns: p50,
-        p99_ns: p99,
-        p999_ns: p999,
-        max_ns: max,
-        mean_ns: mean,
+        count: sorted.len(),
+        p50_ns: stats::percentile(&sorted, 0.50),
+        p99_ns: stats::percentile(&sorted, 0.99),
+        p999_ns: stats::percentile(&sorted, 0.999),
+        max_ns: sorted.last().copied().unwrap_or(0),
+        mean_ns: stats::mean(chronological),
+        stddev_ns: stats::stddev(chronological),
+        cdf_buckets_ns: stats::cdf_buckets(chronological),
+        jitter_score: stats::jitter_score(chronological),
         samples_ns,
     }
 }
 
-/// Evenly-spaced downsample to at most 500 points, chronological order preserved.
-pub(crate) fn downsample(chronological: &[u64]) -> Vec<u64> {
+/// Evenly-spaced downsample to at most `cap` points, chronological order
+/// preserved. `cap == 0` is treated as 1. Pass a `cap >= len` (e.g. equal to
+/// `entries`) to keep every point.
+pub(crate) fn downsample(chronological: &[u64], cap: usize) -> Vec<u64> {
     let n = chronological.len();
     if n == 0 {
         return Vec::new();
     }
-    let step = (n / 500).max(1);
+    let step = (n / cap.max(1)).max(1);
     chronological.iter().copied().step_by(step).collect()
 }
 
@@ -168,7 +312,7 @@ impl SubMsAssertionTarget for SubMsPerfHarness {
         let st = self.stage_by_name(stage)?;
         let mut sorted = st.samples().to_vec();
         sorted.sort_unstable();
-        Some(percentile(&sorted, 0.99))
+        Some(stats::percentile(&sorted, 0.99))
     }
 }
 
@@ -204,6 +348,34 @@ pub fn run_bench<R: SubMsRecipe + ?Sized>(
     crate::recipe::benchmark(recipe, params)
 }
 
+/// Run a contended workload `iterations_per_thread` times on `threads`
+/// threads and discard the timings. The standard way to warm up
+/// recipes whose hot path runs under multi-producer contention: serial
+/// warmup compiles the function under uncontended cache-line traffic,
+/// which doesn't expose the JIT / branch predictor to the actual
+/// contended pattern the timed loop uses. Without this pre-pass the
+/// first 1-2k samples in the timed loop run "cold" under contention
+/// and inflate p99 by 3-5x.
+///
+/// `work` is invoked once per iteration on each thread with the
+/// `(thread_id, iteration)` pair.
+pub fn contended_warmup<F>(threads: usize, iterations_per_thread: usize, work: F)
+where
+    F: Fn(usize, usize) + Send + Sync + 'static + Copy,
+{
+    let mut handles = Vec::with_capacity(threads);
+    for tid in 0..threads {
+        handles.push(std::thread::spawn(move || {
+            for i in 0..iterations_per_thread {
+                work(tid, i);
+            }
+        }));
+    }
+    for h in handles {
+        h.join().expect("contended_warmup thread");
+    }
+}
+
 // ---------------------------------------------------------------------
 // JSON (presenter)
 // ---------------------------------------------------------------------
@@ -232,6 +404,9 @@ pub(crate) fn append_summary_json(out: &mut String, s: &SubMsBenchSummary) {
     out.push_str("\"meta\":");
     json_map(out, &s.meta);
     out.push(',');
+    out.push_str("\"cpu\":");
+    cpu_json(out, s.cpu_core, s.cpu_affinity.as_deref());
+    out.push(',');
     out.push_str("\"stages\":{");
     for (i, stage) in s.stages.iter().enumerate() {
         if i > 0 {
@@ -244,6 +419,26 @@ pub(crate) fn append_summary_json(out: &mut String, s: &SubMsBenchSummary) {
     out.push_str("}}");
 }
 
+fn cpu_json(out: &mut String, core: Option<u32>, affinity: Option<&str>) {
+    if core.is_none() && affinity.is_none() {
+        out.push_str("null");
+        return;
+    }
+    out.push('{');
+    match core {
+        Some(c) => {
+            let _ = write!(out, "\"core\":{c}");
+        }
+        None => out.push_str("\"core\":null"),
+    }
+    out.push_str(",\"affinity\":");
+    match affinity {
+        Some(a) => json_str(out, a),
+        None => out.push_str("null"),
+    }
+    out.push('}');
+}
+
 fn stage_json(out: &mut String, stage: &SubMsStageSummary) {
     out.push('{');
     let _ = write!(out, "\"count\":{},", stage.count);
@@ -252,6 +447,16 @@ fn stage_json(out: &mut String, stage: &SubMsStageSummary) {
     let _ = write!(out, "\"p999_ns\":{},", stage.p999_ns);
     let _ = write!(out, "\"max_ns\":{},", stage.max_ns);
     let _ = write!(out, "\"mean_ns\":{},", stage.mean_ns);
+    let _ = write!(out, "\"stddev_ns\":{},", stage.stddev_ns);
+    let _ = write!(out, "\"jitter_score\":{:.4},", stage.jitter_score);
+    out.push_str("\"cdf_buckets_ns\":[");
+    for (i, c) in stage.cdf_buckets_ns.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let _ = write!(out, "{}", c);
+    }
+    out.push_str("],");
     out.push_str("\"samples_ns\":[");
     if let Some(samples) = &stage.samples_ns {
         for (i, x) in samples.iter().enumerate() {
@@ -643,19 +848,9 @@ fn json_number(d: f64) -> String {
     }
 }
 
-// ---------------------------------------------------------------------
-// Numeric helpers
-// ---------------------------------------------------------------------
-
-/// Percentile over a sorted ns slice. Empty -> 0. Index is `floor(q*n).min(n-1)`
-/// so q=1.0 is the max.
-pub fn percentile(sorted: &[u64], q: f64) -> u64 {
-    if sorted.is_empty() {
-        return 0;
-    }
-    let idx = ((q * sorted.len() as f64) as usize).min(sorted.len() - 1);
-    sorted[idx]
-}
+// percentile is INTERNAL ONLY. Recipes don't reach for it directly;
+// they read the percentile fields off `SubMsStageSummary`. External
+// consumers wanting a standalone percentile fn pull in `subms-stats`.
 
 #[cfg(test)]
 mod tests {
@@ -663,23 +858,23 @@ mod tests {
 
     #[test]
     fn percentile_empty_is_zero() {
-        assert_eq!(percentile(&[], 0.5), 0);
+        assert_eq!(stats::percentile(&[], 0.5), 0);
     }
 
     #[test]
     fn percentile_single_value() {
-        assert_eq!(percentile(&[42], 0.0), 42);
-        assert_eq!(percentile(&[42], 0.5), 42);
-        assert_eq!(percentile(&[42], 1.0), 42);
+        assert_eq!(stats::percentile(&[42], 0.0), 42);
+        assert_eq!(stats::percentile(&[42], 0.5), 42);
+        assert_eq!(stats::percentile(&[42], 1.0), 42);
     }
 
     #[test]
     fn percentile_known_distribution() {
         let v: Vec<u64> = (1..=100).collect();
-        assert_eq!(percentile(&v, 0.50), 51);
-        assert_eq!(percentile(&v, 0.99), 100);
-        assert_eq!(percentile(&v, 0.999), 100);
-        assert_eq!(percentile(&v, 1.0), 100);
+        assert_eq!(stats::percentile(&v, 0.50), 51);
+        assert_eq!(stats::percentile(&v, 0.99), 100);
+        assert_eq!(stats::percentile(&v, 0.999), 100);
+        assert_eq!(stats::percentile(&v, 1.0), 100);
     }
 
     struct FixedSubMsRecipe;
@@ -726,6 +921,48 @@ mod tests {
         let h = run_bench(&FixedSubMsRecipe, &p);
         let s = summarize_lean(&h);
         assert!(s.stages[0].samples_ns.is_none());
+    }
+
+    #[test]
+    fn cpu_json_emits_object_or_null() {
+        let mut a = String::new();
+        cpu_json(&mut a, Some(1), Some("1"));
+        assert_eq!(a, r#"{"core":1,"affinity":"1"}"#);
+        let mut b = String::new();
+        cpu_json(&mut b, Some(0), Some("0-1"));
+        assert_eq!(b, r#"{"core":0,"affinity":"0-1"}"#);
+        let mut c = String::new();
+        cpu_json(&mut c, None, None);
+        assert_eq!(c, "null");
+    }
+
+    #[test]
+    fn downsample_respects_cap() {
+        let full: Vec<u64> = (0..2000).collect();
+        // cap below len → thinned to ~cap points (step = 2000/500 = 4).
+        assert_eq!(downsample(&full, 500).len(), 500);
+        // cap >= len → every point kept.
+        assert_eq!(downsample(&full, 5000).len(), 2000);
+        assert_eq!(downsample(&full, 2000).len(), 2000);
+        // cap 0 is treated as 1 (keep a single stride, not a divide-by-zero).
+        assert_eq!(downsample(&full, 0).len(), 1);
+        // empty in, empty out.
+        assert!(downsample(&[], 500).is_empty());
+    }
+
+    #[test]
+    fn benchmark_threads_sample_cap_onto_harness() {
+        let p = SubMsBenchParams {
+            entries: 4,
+            warmup: 0,
+            seed: 0,
+            sample_cap: 12_345,
+        };
+        let h = crate::benchmark(&FixedSubMsRecipe, &p);
+        assert_eq!(h.sample_cap(), 12_345);
+        // Default params keep the 500 back-compat cap.
+        let hd = crate::benchmark(&FixedSubMsRecipe, &SubMsBenchParams::default());
+        assert_eq!(hd.sample_cap(), 500);
     }
 
     #[test]
@@ -796,11 +1033,13 @@ mod tests {
                 entries: 4,
                 warmup: 0,
                 seed: 0,
+                sample_cap: 500,
             },
             SubMsBenchParams {
                 entries: 4,
                 warmup: 0,
                 seed: 1,
+                sample_cap: 500,
             },
         ];
         let sweep = run_sweep(&FixedSubMsRecipe, &params, Some("seed"));
@@ -829,11 +1068,13 @@ mod tests {
                 entries: 4,
                 warmup: 0,
                 seed: 0,
+                sample_cap: 500,
             },
             SubMsBenchParams {
                 entries: 4,
                 warmup: 0,
                 seed: 0,
+                sample_cap: 500,
             },
         ];
         let sweep = run_sweep(&FixedSubMsRecipe, &params, None);
@@ -852,11 +1093,13 @@ mod tests {
                 entries: 4,
                 warmup: 0,
                 seed: 0,
+                sample_cap: 500,
             },
             SubMsBenchParams {
                 entries: 4,
                 warmup: 0,
                 seed: 0,
+                sample_cap: 500,
             },
         ];
         let sweep = run_sweep(&FixedSubMsRecipe, &params, Some("seed"));
@@ -1013,5 +1256,147 @@ mod tests {
         assert!(out.contains("stage"));
         assert!(out.contains("p99"));
         assert!(out.contains("step"));
+    }
+
+    // ------------------------------------------------------------
+    // 0.5.0 additions: summarize_windowed, cdf_buckets_ns/jitter_score
+    // JSON round-trip
+    // ------------------------------------------------------------
+
+    /// Recipe that records 100 samples into one stage so summarize_windowed
+    /// has enough data for multiple buckets.
+    struct ManySamplesRecipe;
+    impl SubMsRecipe for ManySamplesRecipe {
+        fn name(&self) -> &str {
+            "many-samples"
+        }
+        fn run(&self, h: &mut SubMsPerfHarness, _params: &SubMsBenchParams) {
+            let s = h.stage("op", 100);
+            for i in 0..100 {
+                // Linearly increasing values - first window will have lower
+                // p99 than later windows, so summarize_windowed should
+                // show monotonic non-decreasing p99 across windows.
+                s.record((i + 1) * 100);
+            }
+        }
+    }
+
+    #[test]
+    fn summarize_windowed_splits_into_correct_number_of_buckets() {
+        let p = SubMsBenchParams::default();
+        let h = run_bench(&ManySamplesRecipe, &p);
+        let windows = summarize_windowed(&h, 20);
+        // 100 samples / 20-per-window = 5 windows
+        assert_eq!(windows.len(), 5);
+        // Each window records the bucket index in inputs.
+        for (i, w) in windows.iter().enumerate() {
+            assert_eq!(
+                w.inputs.get("__window_index").map(String::as_str),
+                Some(i.to_string().as_str())
+            );
+            assert_eq!(
+                w.inputs.get("__window_size").map(String::as_str),
+                Some("20")
+            );
+        }
+    }
+
+    #[test]
+    fn summarize_windowed_p99_monotonic_for_monotonic_input() {
+        let p = SubMsBenchParams::default();
+        let h = run_bench(&ManySamplesRecipe, &p);
+        let windows = summarize_windowed(&h, 25);
+        let p99s: Vec<u64> = windows.iter().map(|w| w.stages[0].p99_ns).collect();
+        // Monotonic non-decreasing p99 since the recipe records
+        // i*100 increasing values across the run.
+        for pair in p99s.windows(2) {
+            assert!(
+                pair[1] >= pair[0],
+                "p99 not monotonic: {} -> {}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+
+    #[test]
+    fn summarize_windowed_empty_harness_returns_empty_vec() {
+        // A harness with no stages.
+        let h = SubMsPerfHarness::new("empty", "rust");
+        let windows = summarize_windowed(&h, 10);
+        assert!(windows.is_empty());
+    }
+
+    #[test]
+    fn summarize_windowed_zero_window_treated_as_one() {
+        let p = SubMsBenchParams::default();
+        let h = run_bench(&ManySamplesRecipe, &p);
+        // Window size 0 should be normalised to 1; expect 100 windows.
+        let windows = summarize_windowed(&h, 0);
+        assert_eq!(windows.len(), 100);
+    }
+
+    #[test]
+    fn summary_to_json_emits_cdf_buckets_ns_field() {
+        let p = SubMsBenchParams::default();
+        let s = summarize(&run_bench(&FixedSubMsRecipe, &p));
+        let mut buf = Vec::new();
+        summary_to_json(&s, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("\"cdf_buckets_ns\":["),
+            "summary JSON must include cdf_buckets_ns: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn summary_to_json_emits_jitter_score_field() {
+        let p = SubMsBenchParams::default();
+        let s = summarize(&run_bench(&FixedSubMsRecipe, &p));
+        let mut buf = Vec::new();
+        summary_to_json(&s, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("\"jitter_score\":"),
+            "summary JSON must include jitter_score: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn summary_to_json_emits_stddev_ns_field() {
+        let p = SubMsBenchParams::default();
+        let s = summarize(&run_bench(&FixedSubMsRecipe, &p));
+        let mut buf = Vec::new();
+        summary_to_json(&s, &mut buf).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("\"stddev_ns\":"),
+            "summary JSON must include stddev_ns: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn summarize_populates_cdf_buckets_64_long() {
+        let p = SubMsBenchParams::default();
+        let s = summarize(&run_bench(&FixedSubMsRecipe, &p));
+        assert_eq!(s.stages[0].cdf_buckets_ns.len(), 64);
+        // Total bucket count should equal the sample count.
+        let total: u64 = s.stages[0].cdf_buckets_ns.iter().sum();
+        assert_eq!(total as usize, s.stages[0].count);
+    }
+
+    #[test]
+    fn summarize_populates_jitter_score_in_unit_interval() {
+        let p = SubMsBenchParams::default();
+        let s = summarize(&run_bench(&FixedSubMsRecipe, &p));
+        let jit = s.stages[0].jitter_score;
+        assert!(
+            (0.0..=1.0).contains(&jit),
+            "jitter_score out of [0, 1]: {}",
+            jit
+        );
     }
 }

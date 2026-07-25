@@ -4,7 +4,7 @@
 
     <groupId>com.submillisecond</groupId>
     <artifactId>subms</artifactId>
-    <version>0.3.0</version>
+    <version>0.5.2</version>
     <packaging>jar</packaging>
 
     <name>subms</name>
@@ -28,8 +28,8 @@
         <developer>
             <id>knaier</id>
             <name>Kieran Smith</name>
-            <email>kieran@kieransmith.tech</email>
-            <url>https://submillisecond.com</url>
+            <email>oss@submillisecond.com</email>
+            <url>https://www.submillisecond.com</url>
         </developer>
     </developers>
 
@@ -64,6 +64,13 @@
     -->
 
     <dependencies>
+        <!--
+            Zero runtime dependencies. Recipes downstream pick up
+            `subms` and nothing else; rich stats (CDF buckets, jitter,
+            tail analysis, KS, Cohen's d, bootstrap CIs) live in the
+            sibling `com.submillisecond:subms-stats` jar which
+            consumers add explicitly when they want it.
+        -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
@@ -77,6 +84,45 @@
             <plugin>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.5.5</version>
+            </plugin>
+            <!-- JaCoCo: line coverage. 90% bar is the published quality
+                 standard for subms libraries. Run via
+                 `mvn test jacoco:report`; csv lands at
+                 target/site/jacoco/jacoco.csv for tooling consumption. -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.12</version>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals><goal>prepare-agent</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>verify</phase>
+                        <goals><goal>report</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>check</id>
+                        <phase>verify</phase>
+                        <goals><goal>check</goal></goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.90</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

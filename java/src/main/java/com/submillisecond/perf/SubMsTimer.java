@@ -40,6 +40,57 @@ import java.util.Objects;
  */
 public final class SubMsTimer {
 
+    /**
+     * Opaque starting-tick handle. Returned by {@link #tick()}; the only
+     * useful operation is {@link #elapsedNs()} later. Zero-allocation on the
+     * hot path: the wrapper is a `record` so JVMs that scalarise records
+     * (C2 escape analysis) reduce it to a single `long` register.
+     *
+     * <p>Use this everywhere a recipe or harness wants the
+     * "snapshot now / do work / read delta" pattern - it routes every
+     * platform-clock read through {@code SubMsTimer} so a faster path
+     * (vDSO read, JEP 451 ticks) can be added in one place.
+     */
+    public record SubMsTick(long startNs) {
+        /** Nanoseconds since this tick was taken. */
+        public long elapsedNs() {
+            return SubMsTimer.nanosNow() - this.startNs;
+        }
+    }
+
+    /**
+     * Single source of truth for monotonic-clock reads across the subms
+     * harness. Returns nanoseconds since an arbitrary platform-defined
+     * epoch; meaningful only as a delta against another {@code nanosNow()}
+     * reading. Recipes should use this rather than calling
+     * {@code System.nanoTime()} directly.
+     */
+    public static long nanosNow() {
+        return System.nanoTime();
+    }
+
+    /**
+     * Snapshot the monotonic clock for the
+     * "start tick / do work / read delta" pattern. Recipes use this inside
+     * their bench loops instead of {@code System.nanoTime()}. Cost is one
+     * {@code System.nanoTime()} call plus the (typically scalarised)
+     * record construction.
+     */
+    public static SubMsTick tick() {
+        return new SubMsTick(System.nanoTime());
+    }
+
+    /**
+     * Time a {@code Runnable}. Returns elapsed nanoseconds. Convenient
+     * when the call is on the hot path and the caller doesn't care about
+     * retaining a tick handle.
+     */
+    public static long measureNs(Runnable r) {
+        long t0 = System.nanoTime();
+        r.run();
+        return System.nanoTime() - t0;
+    }
+
     private final String name;
     private long startNs;
     private long lastNs;
@@ -68,7 +119,7 @@ public final class SubMsTimer {
 
     /** Reset to t=0 and clear all checkpoints. */
     public SubMsTimer start() {
-        long now = System.nanoTime();
+        long now = nanosNow();
         this.startNs = now;
         this.lastNs = now;
         this.stoppedAtNs = -1;
@@ -83,7 +134,7 @@ public final class SubMsTimer {
 
     /** Record a checkpoint with the given label. Returns the elapsed-since-start ns. */
     public long mark(String label) {
-        long now = System.nanoTime();
+        long now = nanosNow();
         long sinceStart = now - startNs;
         long sinceLast = now - lastNs;
         lastNs = now;
@@ -98,7 +149,7 @@ public final class SubMsTimer {
 
     /** Final checkpoint; the timer stops accumulating after this. */
     public long stop(String label) {
-        long now = System.nanoTime();
+        long now = nanosNow();
         long sinceStart = now - startNs;
         long sinceLast = now - lastNs;
         lastNs = now;
@@ -114,7 +165,7 @@ public final class SubMsTimer {
 
     /** Elapsed since start. Frozen at the value when {@link #stop} was called if stopped. */
     public long elapsedNs() {
-        return (stoppedAtNs >= 0 ? stoppedAtNs : System.nanoTime()) - startNs;
+        return (stoppedAtNs >= 0 ? stoppedAtNs : nanosNow()) - startNs;
     }
 
     public String name() { return name; }

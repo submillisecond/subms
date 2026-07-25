@@ -8,6 +8,7 @@ import java.io.PrintStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -138,5 +139,184 @@ final class SubMsPerfHarnessTest {
     /** Short prefix of the JSON for assertion messages; full body would be unreadable. */
     private static String head(String s) {
         return s.length() < 240 ? s : s.substring(0, 240) + "...";
+    }
+
+    @Test
+    @DisplayName("PacedStage exposes opIndex + intervalNs after recording")
+    void pacedStageAccessorsTrackProgress() {
+        SubMsPerfHarness h = new SubMsPerfHarness("p", "java");
+        SubMsPerfHarness.PacedStage paced = h.stage("op", 4).withPacing(2_000.0); // 500us / op
+        assertEquals(0L, paced.opIndex());
+        assertEquals(500_000L, paced.intervalNs());
+        paced.time(() -> {});
+        assertEquals(1L, paced.opIndex());
+    }
+
+    @Test
+    @DisplayName("PacedStage rejects non-positive target rate")
+    void pacedStageRejectsBadRate() {
+        SubMsPerfHarness h = new SubMsPerfHarness("p", "java");
+        SubMsPerfHarness.Stage s = h.stage("op", 1);
+        assertThrows(IllegalArgumentException.class, () -> s.withPacing(0.0));
+        assertThrows(IllegalArgumentException.class, () -> s.withPacing(-100.0));
+    }
+
+    @Test
+    @DisplayName("inputs() + meta() return live maps with the recorded keys")
+    void inputsAndMetaPropagated() {
+        SubMsPerfHarness h = new SubMsPerfHarness("im", "java");
+        h.input("entries", "1000");
+        h.input("seed", "42");
+        h.meta("host", "ci-1");
+        assertEquals("1000", h.inputs().get("entries"));
+        assertEquals("42", h.inputs().get("seed"));
+        assertEquals("ci-1", h.meta().get("host"));
+    }
+
+    @Test
+    @DisplayName("timestamp is iso-8601 UTC when set or captured")
+    void timestampPresentAndIso() {
+        SubMsPerfHarness h = new SubMsPerfHarness("t", "java");
+        String ts = h.timestamp();
+        assertNotNull(ts);
+        assertTrue(ts.endsWith("Z"), "iso-8601 Z suffix: " + ts);
+        assertTrue(ts.length() >= 19, "iso-8601 length: " + ts);
+    }
+
+    @Test
+    @DisplayName("warmThenTime records only the measured pass, not the warmup")
+    void warmThenTimeRecordsMeasuredOnly() {
+        SubMsPerfHarness h = new SubMsPerfHarness("warm", "java");
+        SubMsPerfHarness.Stage s = h.stage("op", 8);
+        int[] calls = {0};
+        s.warmThenTime(100, 8, () -> calls[0]++);
+        // op ran warmup + measured times, but only the measured pass is sampled.
+        assertEquals(108, calls[0], "op ran for warmup + measured iterations");
+        assertEquals(8, s.count(), "only the measured pass produced samples");
+    }
+
+    @Test
+    @DisplayName("warmThenTime(IntConsumer) passes the iteration index through both passes")
+    void warmThenTimeIndexAware() {
+        SubMsPerfHarness h = new SubMsPerfHarness("warm-idx", "java");
+        SubMsPerfHarness.Stage s = h.stage("op", 5);
+        int[] warmMax = {-1};
+        int[] timedMax = {-1};
+        // warmup 3, measured 5: warmup sees indices 0..2, timed sees 0..4.
+        s.warmThenTime(3, 5, (int i) -> {
+            // The timed pass is the longer one, so the final observed index is 4.
+            if (i > timedMax[0]) timedMax[0] = i;
+            if (i <= 2 && i > warmMax[0]) warmMax[0] = i;
+        });
+        assertEquals(5, s.count(), "measured-pass samples recorded");
+        assertEquals(4, timedMax[0], "timed pass walks 0..measured-1");
+        assertTrue(warmMax[0] >= 0, "warmup pass ran with its own index range");
+    }
+
+    @Test
+    @DisplayName("stage(name) re-lookup returns the same Stage object")
+    void stageReLookupReturnsSame() {
+        SubMsPerfHarness h = new SubMsPerfHarness("r", "java");
+        SubMsPerfHarness.Stage created = h.stage("op", 1);
+        SubMsPerfHarness.Stage found = h.stage("op");
+        assertTrue(created == found, "stage('op') after create returns the same instance");
+    }
+
+    // ---------- SubMsObserver integration -----------------------------------
+
+    /** One captured record. */
+    private record Captured(String stage, long ns, SubMsStageKind kind,
+                            String workload, String lang) {}
+
+    /** Test observer that records every call. */
+    private static final class RecordingObserver implements SubMsObserver {
+        final java.util.List<Captured> records = new java.util.concurrent.CopyOnWriteArrayList<>();
+        final java.util.concurrent.atomic.AtomicInteger summaries = new java.util.concurrent.atomic.AtomicInteger();
+        @Override public void onRecord(SubMsObservationCtx ctx, long ns) {
+            records.add(new Captured(ctx.stage(), ns, ctx.stageKind(), ctx.workload(), ctx.lang()));
+        }
+        @Override public void onSummarize(SubMsBenchSummary summary) {
+            summaries.incrementAndGet();
+        }
+    }
+
+    @Test
+    @DisplayName("observer is null by default and the harness behaves unchanged")
+    void observerDefaultNoopDoesNotChangeBehaviour() {
+        SubMsPerfHarness h = new SubMsPerfHarness("noop", "java");
+        assertNull(h.observer(), "default observer is null");
+        SubMsPerfHarness.Stage s = h.stage("op", 4);
+        s.record(100);
+        s.record(200);
+        assertEquals(2, s.count());
+        // Build a summary; no observer means no callback, no panic.
+        SubMsBench.summarize(h);
+    }
+
+    @Test
+    @DisplayName("observer fires on record() and time() with correct ctx")
+    void observerFiresOnRecordAndTime() {
+        RecordingObserver obs = new RecordingObserver();
+        SubMsPerfHarness h = new SubMsPerfHarness("rec", "java").withObserver(obs);
+        SubMsPerfHarness.Stage s = h.stage("op", 4);
+        s.record(42);
+        s.time(() -> {});
+        assertEquals(2, obs.records.size(), "record + time each fire once");
+        Captured first = obs.records.get(0);
+        assertEquals("op", first.stage());
+        assertEquals(42L, first.ns());
+        assertEquals("rec", first.workload());
+        assertEquals("java", first.lang());
+        assertEquals("op", obs.records.get(1).stage());
+    }
+
+    @Test
+    @DisplayName("observer fires on warmThenTime only for the measured pass")
+    void observerFiresOnWarmThenTimeOnlyForMeasuredPass() {
+        RecordingObserver obs = new RecordingObserver();
+        SubMsPerfHarness h = new SubMsPerfHarness("warm", "java").withObserver(obs);
+        SubMsPerfHarness.Stage s = h.stage("op", 8);
+        s.warmThenTime(50, 8, () -> {});
+        assertEquals(8, obs.records.size(), "observer fires only on the measured pass");
+    }
+
+    @Test
+    @DisplayName("observer records carry the declared SubMsStageKind")
+    void observerRecordsCarryDeclaredStageKind() {
+        RecordingObserver obs = new RecordingObserver();
+        SubMsPerfHarness h = new SubMsPerfHarness("kind", "java").withObserver(obs);
+        h.stage("put", 4).withKind(SubMsStageKind.HOT_PATH).record(10);
+        h.stage("compact", 4).withKind(SubMsStageKind.BATCH_OP).record(20);
+        assertEquals(SubMsStageKind.HOT_PATH, obs.records.get(0).kind());
+        assertEquals(SubMsStageKind.BATCH_OP, obs.records.get(1).kind());
+    }
+
+    @Test
+    @DisplayName("onSummarize fires exactly once per summarize() call")
+    void observerFiresOnSummarizeExactlyOnce() {
+        RecordingObserver obs = new RecordingObserver();
+        SubMsPerfHarness h = new SubMsPerfHarness("sum", "java").withObserver(obs);
+        SubMsPerfHarness.Stage s = h.stage("op", 4);
+        s.record(1);
+        s.record(2);
+        SubMsBench.summarize(h);
+        assertEquals(1, obs.summaries.get());
+    }
+
+    @Test
+    @DisplayName("setObserver after stages are created is honoured (Stage reads harness.observer per call)")
+    void setObserverAfterStageCreationIsHonoured() {
+        // Stage is created BEFORE the observer is installed; records taken
+        // BEFORE installation are silent, but records taken after see the
+        // newly-installed observer because Stage.record reads harness.observer
+        // each call.
+        SubMsPerfHarness h = new SubMsPerfHarness("late", "java");
+        SubMsPerfHarness.Stage s = h.stage("op", 4);
+        s.record(1); // silent
+        RecordingObserver obs = new RecordingObserver();
+        h.setObserver(obs);
+        s.record(2);
+        assertEquals(1, obs.records.size(), "only the post-install record fires");
+        assertEquals(2L, obs.records.get(0).ns());
     }
 }

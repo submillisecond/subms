@@ -36,33 +36,170 @@ public final class SubMsBench {
     // ---------------------------------------------------------------------
 
     /** Build a {@link SubMsBenchSummary} from the harness. Includes the
-     *  downsampled (max-500) per-stage samples in registration order. */
+     *  downsampled (max-500) per-stage samples in registration order.
+     *
+     *  <p>If a {@link SubMsObserver} is registered on the harness, fires
+     *  {@link SubMsObserver#onSummarize} exactly once with the produced
+     *  summary before returning. Other {@code summarize*} variants
+     *  ({@code summarizeLean}, {@code summarizeSkipping},
+     *  {@code summarizeWindowed}) do NOT fire the observer - they are
+     *  considered internal re-summarisations rather than the canonical
+     *  post-bench result. */
     public static SubMsBenchSummary summarize(SubMsPerfHarness h) {
-        return summarizeInternal(h, /*includeSamples*/ true);
+        SubMsBenchSummary summary = summarizeInternal(h, /*includeSamples*/ true, /*skipWarmup*/ 0);
+        SubMsObserver obs = h.observer();
+        if (obs != null) {
+            obs.onSummarize(summary);
+        }
+        return summary;
     }
 
     /** Same as {@link #summarize} but drops the per-stage sample arrays.
      *  Use when you only need count + percentiles + mean. */
     public static SubMsBenchSummary summarizeLean(SubMsPerfHarness h) {
-        return summarizeInternal(h, /*includeSamples*/ false);
+        return summarizeInternal(h, /*includeSamples*/ false, /*skipWarmup*/ 0);
     }
 
-    private static SubMsBenchSummary summarizeInternal(SubMsPerfHarness h, boolean includeSamples) {
+    /** Same as {@link #summarize} but discards the first {@code skipWarmup}
+     *  samples per stage before computing percentiles + mean + stddev. Use
+     *  when the recipe can't insert a pre-pass warmup itself (e.g. a JIT-
+     *  cold first ~1k operations would skew p99). {@code samplesNs} reflects
+     *  the trimmed timeline. */
+    public static SubMsBenchSummary summarizeSkipping(SubMsPerfHarness h, int skipWarmup) {
+        return summarizeInternal(h, /*includeSamples*/ true, skipWarmup);
+    }
+
+    /**
+     * Slice each stage's chronological sample buffer into {@code window}
+     * equal-sized chunks and produce a {@link SubMsBenchSummary} per
+     * chunk. Useful for rolling-window p99 analysis - "how did p99
+     * evolve across the run?"
+     *
+     * <p>Windows are sample-count-based, not wall-clock-based, since
+     * the harness doesn't record per-sample timestamps. For wall-clock
+     * windows, ensure the workload runs at a roughly steady rate;
+     * then the i-th window approximates the i-th time slice.
+     *
+     * <p>Each returned summary carries two synthetic input keys:
+     * {@code __window_index} (0-based) and {@code __window_size}.
+     * Byte-equivalent to Rust's {@code subms::summarize_windowed}.
+     *
+     * <p>Returns an empty list when the harness has no stages OR every
+     * stage has zero samples.
+     */
+    public static List<SubMsBenchSummary> summarizeWindowed(SubMsPerfHarness h, int window) {
+        int w = Math.max(1, window);
+        int maxLen = 0;
+        for (SubMsPerfHarness.Stage s : h.stagesInOrder()) {
+            int n = s.samples().length;
+            if (n > maxLen) maxLen = n;
+        }
+        if (maxLen == 0) return List.of();
+        int nWindows = (maxLen + w - 1) / w;
+        List<SubMsBenchSummary> out = new ArrayList<>(nWindows);
+        for (int wi = 0; wi < nWindows; wi++) {
+            int start = wi * w;
+            int end = start + w;
+            List<SubMsStageSummary> stageList = new ArrayList<>();
+            for (SubMsPerfHarness.Stage stage : h.stagesInOrder()) {
+                long[] samples = stage.samples();
+                int sliceEnd = Math.min(end, samples.length);
+                long[] slice = (start < samples.length)
+                        ? java.util.Arrays.copyOfRange(samples, start, sliceEnd)
+                        : new long[0];
+                stageList.add(summarizeSliceAsStage(stage.name(), slice));
+            }
+            java.util.LinkedHashMap<String, String> inputs = new java.util.LinkedHashMap<>(h.inputs());
+            inputs.put("__window_index", Integer.toString(wi));
+            inputs.put("__window_size", Integer.toString(w));
+            out.add(new SubMsBenchSummary(
+                    h.workload(),
+                    h.lang(),
+                    h.timestamp(),
+                    null,
+                    null,
+                    java.util.Map.copyOf(inputs),
+                    copyOf(h.meta()),
+                    List.copyOf(stageList)));
+        }
+        return out;
+    }
+
+    /** Build a stage summary from an already-sliced sample array. */
+    private static SubMsStageSummary summarizeSliceAsStage(String name, long[] chronological) {
+        long[] sorted = chronological.clone();
+        java.util.Arrays.sort(sorted);
+        int n = sorted.length;
+        long p50 = percentile(sorted, 0.50);
+        long p99 = percentile(sorted, 0.99);
+        long p999 = percentile(sorted, 0.999);
+        long max = n == 0 ? 0 : sorted[n - 1];
+        long sum = 0;
+        for (long x : sorted) sum += x;
+        long mean = n == 0 ? 0 : sum / n;
+        long stddev = 0L;
+        if (n >= 2) {
+            double mf = mean;
+            double variance = 0.0;
+            for (long x : chronological) {
+                double d = x - mf;
+                variance += d * d;
+            }
+            variance /= (n - 1);
+            stddev = Math.round(Math.sqrt(variance));
+        }
+        return new SubMsStageSummary(name, n, p50, p99, p999, max, mean, stddev, Optional.empty());
+    }
+
+    private static SubMsBenchSummary summarizeInternal(SubMsPerfHarness h, boolean includeSamples, int skipWarmup) {
         List<SubMsStageSummary> stageList = new ArrayList<>();
         for (SubMsPerfHarness.Stage stage : h.stagesInOrder()) {
-            stageList.add(summarizeStage(stage, includeSamples));
+            stageList.add(summarizeStage(stage, includeSamples, skipWarmup, h.sampleCap()));
         }
+        int[] place = cpuPlacement();
         return new SubMsBenchSummary(
                 h.workload(),
                 h.lang(),
                 h.timestamp(),
+                place[0] < 0 ? null : place[0],
+                cpuAffinity(),
                 copyOf(h.inputs()),
                 copyOf(h.meta()),
                 List.copyOf(stageList));
     }
 
-    private static SubMsStageSummary summarizeStage(SubMsPerfHarness.Stage stage, boolean includeSamples) {
-        long[] chronological = stage.samples();   // already a defensive copy
+    /** Last-run CPU core from Linux /proc/self/stat field 39; {-1} off Linux. */
+    private static int[] cpuPlacement() {
+        try {
+            String stat = java.nio.file.Files.readString(java.nio.file.Path.of("/proc/self/stat"));
+            int close = stat.lastIndexOf(')');
+            if (close < 0) return new int[] { -1 };
+            String[] f = stat.substring(close + 1).trim().split("\\s+");
+            // After the final ')', field 3 is index 0, so field 39 is index 36.
+            if (f.length > 36) return new int[] { Integer.parseInt(f[36]) };
+        } catch (Exception e) {
+            /* off Linux / unreadable -> no placement */
+        }
+        return new int[] { -1 };
+    }
+
+    /** Allowed-CPU affinity list from Linux /proc/self/status; null off Linux. */
+    private static String cpuAffinity() {
+        try {
+            for (String l : java.nio.file.Files.readAllLines(java.nio.file.Path.of("/proc/self/status"))) {
+                if (l.startsWith("Cpus_allowed_list:")) return l.substring("Cpus_allowed_list:".length()).trim();
+            }
+        } catch (Exception e) {
+            /* off Linux / unreadable */
+        }
+        return null;
+    }
+
+    private static SubMsStageSummary summarizeStage(SubMsPerfHarness.Stage stage, boolean includeSamples, int skipWarmup, int sampleCap) {
+        long[] all = stage.samples();   // already a defensive copy
+        long[] chronological = (skipWarmup > 0 && all.length > skipWarmup)
+                ? Arrays.copyOfRange(all, skipWarmup, all.length)
+                : all;
         long[] sorted = chronological.clone();
         Arrays.sort(sorted);
         int n = sorted.length;
@@ -73,17 +210,32 @@ public final class SubMsBench {
         long sum  = 0;
         for (long x : sorted) sum += x;
         long mean = n == 0 ? 0 : sum / n;
+        // Sample stddev (n-1 denominator). f64 internally so the sum-of-
+        // squares doesn't overflow on a stage that records millions of small
+        // ns values.
+        long stddev = 0L;
+        if (n >= 2) {
+            double mf = mean;
+            double variance = 0.0;
+            for (long x : chronological) {
+                double d = x - mf;
+                variance += d * d;
+            }
+            variance /= (n - 1);
+            stddev = Math.round(Math.sqrt(variance));
+        }
         Optional<long[]> samples = includeSamples
-                ? Optional.of(downsample(chronological))
+                ? Optional.of(downsample(chronological, sampleCap))
                 : Optional.empty();
-        return new SubMsStageSummary(stage.name(), n, p50, p99, p999, max, mean, samples);
+        return new SubMsStageSummary(stage.name(), n, p50, p99, p999, max, mean, stddev, samples);
     }
 
-    /** Evenly-spaced downsample to at most 500 points, chronological order preserved. */
-    static long[] downsample(long[] chronological) {
+    /** Evenly-spaced downsample to at most {@code cap} points ({@code cap<=0} treated
+     *  as 1), chronological order preserved. Pass {@code cap>=len} to keep every point. */
+    static long[] downsample(long[] chronological, int cap) {
         int n = chronological.length;
         if (n == 0) return new long[0];
-        int step = Math.max(1, n / 500);
+        int step = Math.max(1, n / Math.max(1, cap));
         int outLen = (n + step - 1) / step;
         long[] out = new long[outLen];
         int oi = 0;
@@ -171,6 +323,7 @@ public final class SubMsBench {
         h.input("entries", Integer.toString(p.entries()));
         h.input("warmup", Integer.toString(p.warmup()));
         h.input("seed", Long.toString(p.seed()));
+        h.sampleCap(p.sampleCap());
         r.run(h, p);
         return h;
     }
@@ -205,6 +358,7 @@ public final class SubMsBench {
         kv(out, "timestamp", s.timestamp()); out.append(',');
         out.append("\"inputs\":"); map(out, s.inputs()); out.append(',');
         out.append("\"meta\":");   map(out, s.meta());   out.append(',');
+        out.append("\"cpu\":"); cpuJson(out, s.cpuCore(), s.cpuAffinity()); out.append(',');
         out.append("\"stages\":{");
         boolean first = true;
         for (SubMsStageSummary stage : s.stages()) {
@@ -217,6 +371,19 @@ public final class SubMsBench {
         out.append("}}");
     }
 
+    private static void cpuJson(StringBuilder out, Integer core, String affinity) {
+        if (core == null && affinity == null) {
+            out.append("null");
+            return;
+        }
+        out.append('{');
+        out.append("\"core\":").append(core == null ? "null" : core.toString());
+        out.append(",\"affinity\":");
+        if (affinity == null) out.append("null");
+        else jsonStr(out, affinity);
+        out.append('}');
+    }
+
     private static void stageJson(StringBuilder out, SubMsStageSummary stage) {
         out.append('{')
            .append("\"count\":").append(stage.count()).append(',')
@@ -225,6 +392,7 @@ public final class SubMsBench {
            .append("\"p999_ns\":").append(stage.p999Ns()).append(',')
            .append("\"max_ns\":").append(stage.maxNs()).append(',')
            .append("\"mean_ns\":").append(stage.meanNs()).append(',')
+           .append("\"stddev_ns\":").append(stage.stddevNs()).append(',')
            .append("\"samples_ns\":[");
         if (stage.samplesNs().isPresent()) {
             long[] arr = stage.samplesNs().get();
@@ -560,5 +728,42 @@ public final class SubMsBench {
         if (sorted.length == 0) return 0;
         int idx = Math.min(sorted.length - 1, (int) (q * sorted.length));
         return sorted[idx];
+    }
+
+    /**
+     * Run a contended workload {@code iterationsPerThread} times on
+     * {@code threads} threads and discard the timings. The standard way
+     * to warm up recipes whose hot path runs under multi-producer or
+     * multi-consumer contention: a serial warmup compiles the function
+     * under uncontended cache-line traffic, which doesn't expose C2 to
+     * the actual contended pattern the timed loop uses. Without this
+     * pre-pass the first 1-2k samples in the timed loop are JIT-cold
+     * under contention and inflate p99 by 3-5x.
+     *
+     * <p>{@code perThreadWork} is invoked once per iteration on each
+     * thread with the (thread id, iteration) pair.
+     *
+     * @throws RuntimeException if any worker thread fails or is interrupted.
+     */
+    public static void contendedWarmup(
+            int threads,
+            int iterationsPerThread,
+            java.util.function.BiConsumer<Integer, Integer> perThreadWork) {
+        Thread[] ts = new Thread[threads];
+        for (int tid = 0; tid < threads; tid++) {
+            final int t = tid;
+            ts[tid] = new Thread(() -> {
+                for (int i = 0; i < iterationsPerThread; i++) {
+                    perThreadWork.accept(t, i);
+                }
+            });
+            ts[tid].start();
+        }
+        try {
+            for (Thread t : ts) t.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException(e);
+        }
     }
 }

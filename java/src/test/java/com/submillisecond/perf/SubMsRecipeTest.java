@@ -21,7 +21,7 @@ final class SubMsRecipeTest {
 
     @Test
     void recipeRunsThroughHarness() {
-        SubMsBenchParams p = new SubMsBenchParams(10, 3, 0L);
+        SubMsBenchParams p = new SubMsBenchParams(10, 3, 0L, 500);
         SubMsPerfHarness h = SubMsBench.runBench(new TinyRecipe(), p);
         assertEquals(3, h.stage("warmup").count());
         assertEquals(10, h.stage("work").count());
@@ -29,7 +29,7 @@ final class SubMsRecipeTest {
 
     @Test
     void recipeNameSurfacesAsWorkload() throws Exception {
-        SubMsPerfHarness h = SubMsBench.runBench(new TinyRecipe(), new SubMsBenchParams(2, 1, 0L));
+        SubMsPerfHarness h = SubMsBench.runBench(new TinyRecipe(), new SubMsBenchParams(2, 1, 0L, 500));
         java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
         try (java.io.PrintStream ps = new java.io.PrintStream(out, true, "UTF-8")) {
             h.writeJson(ps);

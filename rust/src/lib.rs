@@ -52,18 +52,36 @@
 //! ```
 
 pub mod bench;
+pub mod bench_loops;
+pub mod env;
+pub mod growth;
+pub mod observer;
 pub mod params;
 pub mod recipe;
+mod stats; // private - internal to bench summary computation only
 pub mod summary;
 pub mod timer;
 pub mod util;
 
 pub use bench::{
-    DEFAULT_REGRESSION_THRESHOLD_PCT, SubMsBenchAssertion, assert_p99_under, diff_summary,
-    diff_summary_with, diff_to_json, format_ns, percentile, print_diff, print_summary, print_sweep,
-    run_bench, run_sweep, summarize, summarize_lean, summarize_sweep, summary_to_json,
-    sweep_to_json,
+    DEFAULT_REGRESSION_THRESHOLD_PCT, SubMsBenchAssertion, assert_p99_under, contended_warmup,
+    diff_summary, diff_summary_with, diff_to_json, format_ns, print_diff, print_summary,
+    print_sweep, run_bench, run_sweep, summarize, summarize_lean, summarize_skipping,
+    summarize_sweep, summarize_windowed, summary_to_json, sweep_to_json,
 };
+pub use bench_loops::{bench_indexed_op, bench_keyed_op, bench_templated_op};
+pub use growth::{
+    GROWTH_VERSION, SubMsGrowthClass, SubMsGrowthRecipe, SubMsGrowthReport, SubMsGrowthRound,
+    SubMsGrowthVerdict, assert_growth_holds, grow, growth_to_json,
+};
+
+// NB: percentile / mean / stddev / cdf_buckets / jitter_score are NOT
+// re-exported from `subms`. They're computed internally to build the
+// JSON summary but the public-API surface of the bench harness should
+// stay small. Anyone wanting rich stats (percentile_sweep, tail
+// analysis, KS, Cohen's d, bootstrap CIs, ...) should add
+// `subms-stats = "0.5"` directly. Recipes should depend on `subms`
+// only and read percentiles off the SubMsStageSummary.
 pub use params::{parse_bool, parse_string, parse_u64, parse_usize};
 pub use recipe::{SubMsBenchParams, SubMsRecipe, benchmark};
 pub use summary::{
@@ -71,37 +89,101 @@ pub use summary::{
     SubMsStageSummary,
 };
 // SubMsPacedStage is defined inline in this file - re-export it from the root.
-pub use timer::{SubMsTimer, SubMsTimerCheckpoint};
+pub use env::{SubMsAppEnv, SubMsAppRegion, env_bool, env_f64, env_i64, env_or, env_str, env_u64};
+pub use observer::{ObservationCtx, SubMsObserver, SubMsStageKind};
+pub use timer::{SubMsTick, SubMsTimer, SubMsTimerCheckpoint};
 pub use util::SubMsLcg;
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// Per-stage sample buffer + recorder.
+/// Per-stage sample buffer + recorder. Optionally annotated with a
+/// [`SubMsStageKind`] that sibling adapters (e.g. `subms-otel`) use to pick
+/// histogram bucket boundaries.
 pub struct SubMsStage {
     name: String,
     samples: Vec<u64>,
+    kind: SubMsStageKind,
+    // Cheap clones of the harness identity + observer registration so each
+    // recorded sample can build an ObservationCtx without borrowing the
+    // harness back. None of these allocate on the hot path - the Arc clones
+    // happen once at stage construction.
+    workload: Arc<str>,
+    lang: Arc<str>,
+    observer: Option<Arc<dyn SubMsObserver>>,
 }
 
 impl SubMsStage {
-    fn new(name: &str, capacity: usize) -> Self {
+    fn new(
+        name: &str,
+        capacity: usize,
+        workload: Arc<str>,
+        lang: Arc<str>,
+        observer: Option<Arc<dyn SubMsObserver>>,
+    ) -> Self {
         Self {
             name: name.to_string(),
             samples: Vec::with_capacity(capacity),
+            kind: SubMsStageKind::Unspecified,
+            workload,
+            lang,
+            observer,
         }
     }
-    /// Record an explicit duration in nanoseconds.
+
+    /// Annotate this stage's kind so observers can pick fitting histogram
+    /// buckets. Default is [`SubMsStageKind::Unspecified`]. Chainable.
+    pub fn with_kind(&mut self, kind: SubMsStageKind) -> &mut Self {
+        self.kind = kind;
+        self
+    }
+
+    /// Record an explicit duration in nanoseconds. Also fires the registered
+    /// observer (if any).
     pub fn record(&mut self, ns: u64) {
         self.samples.push(ns);
+        if let Some(obs) = &self.observer {
+            let ctx = ObservationCtx {
+                workload: &self.workload,
+                lang: &self.lang,
+                stage: &self.name,
+                stage_kind: self.kind,
+            };
+            obs.on_record(&ctx, ns);
+        }
     }
     /// Time a closure and record its duration.
     pub fn time<F: FnOnce() -> R, R>(&mut self, f: F) -> R {
         let t0 = Instant::now();
         let r = f();
-        self.samples.push(t0.elapsed().as_nanos() as u64);
+        self.record(t0.elapsed().as_nanos() as u64);
         r
+    }
+
+    /// Warm, then record `measured` timed samples of `op`. Runs `op` for
+    /// `warmup` untimed iterations first, then times `measured` more. `op`
+    /// receives the iteration index on both passes (warmup: `0..warmup`,
+    /// measured: `0..measured`); index a shorter input with `i % len`.
+    ///
+    /// On this AOT-compiled side the warmup mainly primes caches and the
+    /// branch predictor. The Java counterpart `warmThenTime` carries the
+    /// real weight: it drives HotSpot to C2 (and lets escape analysis elide
+    /// short-lived allocations) before any sample is recorded, without which
+    /// a JIT-cold low-iteration stage reads orders of magnitude slow. The two
+    /// harnesses expose the method symmetrically so a bench reads the same in
+    /// either language.
+    pub fn warm_then_time<F: FnMut(usize)>(&mut self, warmup: usize, measured: usize, mut op: F) {
+        for i in 0..warmup {
+            op(i);
+        }
+        for i in 0..measured {
+            let t0 = Instant::now();
+            op(i);
+            self.record(t0.elapsed().as_nanos() as u64);
+        }
     }
 
     /// Wrap the stage in a coordinated-omission-corrected paced recorder. Each
@@ -186,22 +268,41 @@ impl<'a> SubMsPacedStage<'a> {
 /// live in [`crate::bench`] - call [`summarize`] to lift this into a
 /// [`SubMsBenchSummary`].
 pub struct SubMsPerfHarness {
-    workload: String,
-    lang: String,
+    // Arc<str> so each Stage holds a cheap clone of the harness identity
+    // without per-call string allocation when an observer is registered.
+    workload: Arc<str>,
+    lang: Arc<str>,
     inputs: BTreeMap<String, String>,
     meta: BTreeMap<String, String>,
     stages: Vec<SubMsStage>,
+    observer: Option<Arc<dyn SubMsObserver>>,
+    sample_cap: usize,
 }
 
 impl SubMsPerfHarness {
     pub fn new(workload: &str, lang: &str) -> Self {
         Self {
-            workload: workload.to_string(),
-            lang: lang.to_string(),
+            workload: Arc::from(workload),
+            lang: Arc::from(lang),
             inputs: BTreeMap::new(),
             meta: BTreeMap::new(),
             stages: Vec::new(),
+            observer: None,
+            sample_cap: 500,
         }
+    }
+
+    /// Max points kept in each stage's emitted `samples_ns` timeline. Default
+    /// 500; [`crate::benchmark`] sets it from [`crate::SubMsBenchParams::sample_cap`].
+    /// Clamped to at least 1.
+    pub fn set_sample_cap(&mut self, cap: usize) -> &mut Self {
+        self.sample_cap = cap.max(1);
+        self
+    }
+
+    /// The configured `samples_ns` downsample cap (see [`Self::set_sample_cap`]).
+    pub fn sample_cap(&self) -> usize {
+        self.sample_cap
     }
 
     pub fn input(&mut self, key: &str, value: &str) -> &mut Self {
@@ -218,8 +319,38 @@ impl SubMsPerfHarness {
 
     /// Create a stage; record samples via [`SubMsStage::time`] or [`SubMsStage::record`].
     pub fn stage(&mut self, name: &str, capacity: usize) -> &mut SubMsStage {
-        self.stages.push(SubMsStage::new(name, capacity));
+        let stage = SubMsStage::new(
+            name,
+            capacity,
+            Arc::clone(&self.workload),
+            Arc::clone(&self.lang),
+            self.observer.as_ref().map(Arc::clone),
+        );
+        self.stages.push(stage);
         self.stages.last_mut().unwrap()
+    }
+
+    /// Register an observer to receive every recorded sample and the
+    /// post-bench summary. Replaces any existing observer; updates already-
+    /// created stages so they fire the new observer too. Returns self for
+    /// builder-style chaining.
+    pub fn with_observer(mut self, observer: Arc<dyn SubMsObserver>) -> Self {
+        self.set_observer(Some(observer));
+        self
+    }
+
+    /// Mutable setter for late wiring. `None` clears the observer.
+    pub fn set_observer(&mut self, observer: Option<Arc<dyn SubMsObserver>>) -> &mut Self {
+        for stage in self.stages.iter_mut() {
+            stage.observer = observer.as_ref().map(Arc::clone);
+        }
+        self.observer = observer;
+        self
+    }
+
+    /// Read the currently-registered observer, if any. Mostly for tests.
+    pub fn observer(&self) -> Option<&Arc<dyn SubMsObserver>> {
+        self.observer.as_ref()
     }
 
     /// Borrow a previously-created stage by name.

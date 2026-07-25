@@ -18,6 +18,11 @@ public record SubMsBenchSummary(
         String workload,
         String lang,
         String timestamp,
+        /** Last-run CPU core (Linux {@code /proc/self/stat}), or null off Linux. */
+        Integer cpuCore,
+        /** Allowed-CPU affinity list (Linux {@code Cpus_allowed_list}), e.g. "1"
+         *  (pinned/isolated) or "0-1" (migratable); null off Linux. */
+        String cpuAffinity,
         Map<String, String> inputs,
         Map<String, String> meta,
         List<SubMsStageSummary> stages) {

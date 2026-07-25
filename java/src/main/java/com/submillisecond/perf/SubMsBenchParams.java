@@ -11,20 +11,37 @@ import java.util.Map;
 public record SubMsBenchParams(
         /** Work items per stage. */ int entries,
         /** Pre-timed warm-up iterations. */ int warmup,
-        /** Deterministic RNG seed. */ long seed) {
+        /** Deterministic RNG seed. */ long seed,
+        /**
+         * Max points kept in each stage's emitted {@code samples_ns} timeline
+         * (evenly-spaced downsample of the full {@code entries} measurements).
+         * Default 500; raise it (e.g. 5000/50000) when downstream tooling
+         * recomputes percentiles from the stored timeline or archives it.
+         */
+        int sampleCap) {
 
-    /** Standard defaults: 50k entries, 5k warm-up, seed 0. */
-    public static SubMsBenchParams defaults() {
-        return new SubMsBenchParams(50_000, 5_000, 0L);
+    /**
+     * Back-compat constructor: {@code entries}/{@code warmup}/{@code seed} with
+     * the default {@code sampleCap} (500). Recipes that construct params directly
+     * predate {@code sampleCap} and must keep compiling when the core adds it.
+     */
+    public SubMsBenchParams(int entries, int warmup, long seed) {
+        this(entries, warmup, seed, 500);
     }
 
-    /** Reads {@code entries}/{@code warmup}/{@code seed}; missing keys default. */
+    /** Standard defaults: 50k entries, 5k warm-up, seed 0, 500 stored samples. */
+    public static SubMsBenchParams defaults() {
+        return new SubMsBenchParams(50_000, 5_000, 0L, 500);
+    }
+
+    /** Reads {@code entries}/{@code warmup}/{@code seed}/{@code sample_cap}; missing keys default. */
     public static SubMsBenchParams fromMap(Map<String, String> args) {
         SubMsBenchParams d = defaults();
         return new SubMsBenchParams(
                 parseInt(args, "entries", d.entries),
                 parseInt(args, "warmup", d.warmup),
-                parseLong(args, "seed", d.seed));
+                parseLong(args, "seed", d.seed),
+                parseInt(args, "sample_cap", d.sampleCap));
     }
 
     /** Equivalent to {@code fromMap(SubMsPerfHarness.readStdinKv())}. */
