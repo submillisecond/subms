@@ -34,7 +34,7 @@ detects coordinated omission, and emits a stable JSON contract.
 
 ```toml
 [dependencies]
-subms = "0.3"
+subms = "0.5"
 ```
 
 ### Java (Maven)
@@ -43,7 +43,7 @@ subms = "0.3"
 <dependency>
     <groupId>com.submillisecond</groupId>
     <artifactId>subms</artifactId>
-    <version>0.3.0</version>
+    <version>0.5.2</version>
 </dependency>
 ```
 
@@ -148,7 +148,7 @@ You can use `subms` standalone for in-process measurement and never touch the ac
 
 ## Stability
 
-- **v0.x.y**: API may change between minors. Pin to a precise tag (`subms = "=0.3.0"`) for stability before v1.
+- **v0.x.y**: API may change between minors. Pin to a precise tag (`subms = "=0.5.2"`) for stability before v1.
 - **v1.0.0**: API frozen; semver thereafter.
 - **JSON contract**: stable since v0.2. Field renames will require a major bump.
 
@@ -183,4 +183,4 @@ Plus a **pre-commit hook** at [`.pre-commit-config.yaml`](.pre-commit-config.yam
 
 ## Status
 
-**v0.3.0**, pre-1.0. Used internally across the [submillisecond cookbook](https://submillisecond.com/cookbook) (16 dual-language recipes). Not yet hardened by external adoption — early bug reports help.
+Pre-1.0 (current version on the crates.io / Maven Central badges above): the API may still shift between minors. Used across the [submillisecond cookbook](https://submillisecond.com/cookbook); bug reports and API feedback welcome.
