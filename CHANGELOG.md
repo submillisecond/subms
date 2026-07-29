@@ -7,6 +7,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-29
+
 ### Added
 
 - **Per-feature latency classification + manifest** (`feature` module): the harness
