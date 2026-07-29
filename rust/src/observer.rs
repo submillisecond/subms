@@ -1,5 +1,5 @@
 //! Observer hook: a no-op-by-default trait other code can register against a
-//! [`SubMsPerfHarness`] to receive samples and summaries as they happen.
+//! [`crate::SubMsPerfHarness`] to receive samples and summaries as they happen.
 //!
 //! The harness stays zero-dep. The hook fires only when an observer is set,
 //! and costs one branch + one virtual call per recorded sample (~1-2 ns).
@@ -59,7 +59,7 @@ pub struct ObservationCtx<'a> {
 }
 
 /// Hook a sibling crate (or downstream consumer) can register against a
-/// [`SubMsPerfHarness`] to react to every recorded sample plus the
+/// [`crate::SubMsPerfHarness`] to react to every recorded sample plus the
 /// post-bench summary. Both methods default to a no-op so adding methods to
 /// the trait later is non-breaking.
 ///
