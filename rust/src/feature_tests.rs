@@ -170,7 +170,8 @@ fn sample_features_classify_correctly() {
     // Realistic archetypes: the harness decides each from its measured shape,
     // proving the taxonomy is an output, not a hand-authored label.
     let base = Some(300u64);
-    let cases: [(&str, Vec<(usize, u64)>, SubMsFeatureCategory); 5] = [
+    type SampleCase = (&'static str, Vec<(usize, u64)>, SubMsFeatureCategory);
+    let cases: [SampleCase; 5] = [
         (
             "counting",
             vec![(1_024, 350), (16_384, 360), (262_144, 372)],

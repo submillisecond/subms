@@ -248,4 +248,66 @@ final class SubMsFeatureManifestTest {
         SubMsFeatureManifest reloaded = SubMsFeatureManifest.load("rust", path);
         assertEquals(SubMsFeatureCategory.HOT_PATH, reloaded.categoryOf("f"));
     }
+
+    @Test
+    void parserCoversAllValueKindsAndEscapes() {
+        // Every value kind + every string escape (unicode + a control char) +
+        // signed/decimal/exponent numbers, driven through a load -> re-serialise
+        // round-trip so both the parser and the serialiser arms are exercised.
+        String rich = "{\"lang\":\"rust\","
+                + "\"str\":\"a\\\"b\\\\c\\/d\\n\\t\\r\\b\\f\\u0041\\u0002\","
+                + "\"neg\":-12,\"exp\":1.5e3,\"flt\":3.14,"
+                + "\"bt\":true,\"bf\":false,\"nul\":null,"
+                + "\"arr\":[1,\"x\",true,null,[2],{\"k\":3}],\"empty\":[],"
+                + "\"features\":{}}";
+        SubMsFeatureManifest m = SubMsFeatureManifest.loadStr("rust", rich);
+        String out = m.toJson();
+        // Number literals round-trip verbatim (parser keeps the raw token).
+        assertTrue(out.contains("-12"));
+        assertTrue(out.contains("1.5e3"));
+        assertTrue(out.contains("3.14"));
+        assertTrue(out.contains("\"arr\""));
+        // The parsed control char re-escapes via the \\uXXXX serialiser arm.
+        assertTrue(out.contains("\\u0002"));
+        // The serialised form re-parses (nested arrays/objects survive the round-trip).
+        SubMsFeatureManifest round = SubMsFeatureManifest.loadStr("rust", out);
+        assertTrue(round.toJson().contains("\"neg\""));
+        // A reason carrying escapes exercises the writeString escape arms.
+        m.setFeature("f", SubMsFeatureCategory.HOT_PATH, p99("op", 1L), "l1\nl2\t\"q\"\\z");
+        assertTrue(m.toJson().contains("\\n"));
+    }
+
+    @Test
+    void parserErrorBranchesFallBackNotCrash() {
+        // Each malformed input drives a distinct parser throw; loadStr must catch
+        // it and fall back to a fresh, writable manifest.
+        String[] bad = {
+            "{\"a\" 1}",         // expected ':'
+            "{\"a\":1 \"b\":2}", // expected ',' or '}'
+            "[1 2]",             // expected ',' or ']'
+            "\"unterminated",    // unterminated string
+            "tru",               // bad bool literal
+            "nul",               // bad null literal
+            "{}x",               // trailing input
+            "\"\\x\"",           // bad escape
+            "@",                 // unexpected leading byte
+        };
+        for (String b : bad) {
+            SubMsFeatureManifest m = SubMsFeatureManifest.loadStr("rust", b);
+            m.setFeature("f", SubMsFeatureCategory.HOT_PATH, null, "r");
+            assertEquals(SubMsFeatureCategory.HOT_PATH, m.categoryOf("f"), "input: " + b);
+        }
+    }
+
+    @Test
+    void categoryEnumWireForms() {
+        assertEquals("hot-path", SubMsFeatureCategory.HOT_PATH.asString());
+        assertEquals("structural", SubMsFeatureCategory.STRUCTURAL.asString());
+        assertEquals("auxiliary", SubMsFeatureCategory.AUXILIARY.asString());
+        assertEquals(SubMsFeatureCategory.HOT_PATH, SubMsFeatureCategory.fromWire("hot-path"));
+        assertEquals(SubMsFeatureCategory.STRUCTURAL, SubMsFeatureCategory.fromWire("structural"));
+        assertEquals(SubMsFeatureCategory.AUXILIARY, SubMsFeatureCategory.fromWire("auxiliary"));
+        assertNull(SubMsFeatureCategory.fromWire("nope"));
+        assertNull(SubMsFeatureCategory.fromWire(null));
+    }
 }
