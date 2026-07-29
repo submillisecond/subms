@@ -6,8 +6,8 @@
 //! env var. Each env-touching test uses a distinct key so parallel test runs
 //! don't race.
 
+use crate::{SubMsAppEnv, SubMsAppRegion, env_bool, env_f64, env_i64, env_or, env_str, env_u64};
 use std::env;
-use subms::{SubMsAppEnv, SubMsAppRegion, env_bool, env_f64, env_i64, env_or, env_str, env_u64};
 
 // ---------- SubMsAppEnv::parse ----------
 

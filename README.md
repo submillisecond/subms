@@ -120,6 +120,58 @@ Identical surface, byte-equivalent JSON output.
 
 Full schema spec, diff variant, sweep variant, and adapter notes for JMH / Criterion / HdrHistogram in [`docs/JSON-CONTRACT.md`](docs/JSON-CONTRACT.md).
 
+## Per-feature latency: the bench decides the category
+
+A library's optional features are not all the same kind of thing. Some change the
+per-op hot path (a real p99 claim). Some are O(n) whole-structure operations -
+serialize, compaction - that cannot honestly carry a per-op sub-millisecond
+number. Some are pure capabilities with no latency delta at all (a serde derive,
+a debug counter). The harness measures each and lets the **bench decide** which is
+which, from a size sweep - the taxonomy is an *output*, not a hand-authored label:
+
+| category | how it is decided | meaning |
+|---|---|---|
+| `hot-path` | p99 stays flat / sub-linear as the structure grows, and sits above the base op | a measured per-op p99 claim |
+| `structural` | p99 grows with size - O(n) or worse (the `STRUCTURAL_FRACTION` slope test) | O(n)+, excluded from the per-op claim |
+| `auxiliary` | no workload registered, or a p99 within noise of the base op | a capability, no latency claim |
+
+```rust
+use subms::{classify_feature, SubMsFeatureCategory, SubMsFeatureManifest};
+use std::collections::BTreeMap;
+
+// A size sweep of (structure_size, p99_ns) for the feature's workload.
+let sweep = [(1_024usize, 350u64), (16_384, 360), (262_144, 372)];
+let (category, reason) = classify_feature(&sweep, /* base p99 */ Some(300), /* override */ None);
+assert_eq!(category, SubMsFeatureCategory::HotPath);
+
+// Merge the decision into the per-language manifest, preserving every field the
+// harness does not own (yours, or another tool's).
+let mut manifest = SubMsFeatureManifest::load_str("rust", existing_json);
+let mut p99 = BTreeMap::new();
+p99.insert("add".to_string(), 372);
+manifest.set_feature("counting", category, &p99, &reason);
+std::fs::write(".subms/features/rust.json", manifest.to_json())?;
+```
+
+`SubMsFeatureManifest` round-trips through a hand-written, zero-dependency JSON
+value model, so a load/update/save touches **only** the target feature's `perf`
+rating + `p99ByStage` - a third party can enrich the file with arbitrary fields
+and they survive every harness write. An `override` escape hatch (recorded, with a
+reason) handles the genuinely ambiguous cases (amortized, borderline O(log n)).
+
+### The `.subms/` layout
+
+Everything a `subms` harness emits for a project lives under one directory next to
+the code - the same for a library benchmarking itself and for any downstream
+consumer:
+
+```text
+<project>/.subms/
+  perf/       <lang>.json + .raw.json + .storage.json   # official captures - git-tracked
+  features/   <lang>.json                                # the feature manifest above
+  local/      ...                                        # local dev captures - git-ignored
+```
+
 ## Beyond a single bench: the ecosystem
 
 The harness is most useful when paired with the CI / observability tooling that consumes its JSON shape:

@@ -1,6 +1,6 @@
+use crate::SubMsPerfHarness;
 use std::thread;
 use std::time::Duration;
-use subms::SubMsPerfHarness;
 
 #[test]
 fn round_trip_smoke() {
@@ -67,8 +67,8 @@ fn warm_then_time_records_measured_only() {
 
 // ---------- SubMsObserver integration ----------------------------------------
 
+use crate::{ObservationCtx, SubMsObserver, SubMsStageKind, summarize};
 use std::sync::{Arc, Mutex};
-use subms::{ObservationCtx, SubMsObserver, SubMsStageKind, summarize};
 
 /// One captured record. Named struct rather than a tuple so clippy stays
 /// quiet about type complexity and the test assertions read cleanly.
@@ -100,7 +100,7 @@ impl SubMsObserver for RecordingObserver {
             lang: ctx.lang.to_string(),
         });
     }
-    fn on_summarize(&self, _summary: &subms::SubMsBenchSummary) {
+    fn on_summarize(&self, _summary: &crate::SubMsBenchSummary) {
         *self.summaries.lock().unwrap() += 1;
     }
 }

@@ -54,6 +54,7 @@
 pub mod bench;
 pub mod bench_loops;
 pub mod env;
+pub mod feature;
 pub mod growth;
 pub mod observer;
 pub mod params;
@@ -70,6 +71,7 @@ pub use bench::{
     summarize_sweep, summarize_windowed, summary_to_json, sweep_to_json,
 };
 pub use bench_loops::{bench_indexed_op, bench_keyed_op, bench_templated_op};
+pub use feature::{Json, SubMsFeatureCategory, SubMsFeatureManifest, classify_feature, parse_json};
 pub use growth::{
     GROWTH_VERSION, SubMsGrowthClass, SubMsGrowthRecipe, SubMsGrowthReport, SubMsGrowthRound,
     SubMsGrowthVerdict, assert_growth_holds, grow, growth_to_json,
@@ -467,3 +469,7 @@ pub fn read_stdin_kv() -> BTreeMap<String, String> {
     }
     m
 }
+
+#[cfg(test)]
+#[path = "subms_tests.rs"]
+mod tests;

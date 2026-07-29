@@ -47,3 +47,7 @@ pub fn benchmark<R: SubMsRecipe + ?Sized>(
     recipe.run(&mut h, params);
     h
 }
+
+#[cfg(test)]
+#[path = "recipe_tests.rs"]
+mod tests;

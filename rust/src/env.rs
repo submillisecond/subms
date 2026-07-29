@@ -131,3 +131,7 @@ pub fn env_f64(key: &str, default: f64) -> f64 {
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(default)
 }
+
+#[cfg(test)]
+#[path = "env_tests.rs"]
+mod tests;
