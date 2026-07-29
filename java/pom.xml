@@ -4,12 +4,12 @@
 
     <groupId>com.submillisecond</groupId>
     <artifactId>subms</artifactId>
-    <version>0.5.2</version>
+    <version>0.7.1</version>
     <packaging>jar</packaging>
 
     <name>subms</name>
     <description>The sub-millisecond perf harness for Java. Zero-dependency library that records timed samples per stage, computes percentiles, supports coordinated-omission correction, and emits a stable JSON contract. Byte-equivalent to the `subms` Rust crate.</description>
-    <url>https://github.com/submillisecond/subms</url>
+    <url>https://www.submillisecond.com/cookbook/primers/subms-perf-harness</url>
 
     <licenses>
         <license>

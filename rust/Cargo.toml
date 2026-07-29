@@ -1,6 +1,6 @@
 [package]
 name = "subms"
-version = "0.5.2"
+version = "0.7.1"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Kieran Smith <oss@submillisecond.com>"]
@@ -8,7 +8,7 @@ description = "The sub-millisecond perf harness for Rust. Zero-dependency std-on
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/submillisecond/subms"
-homepage = "https://github.com/submillisecond/subms"
+homepage = "https://www.submillisecond.com/cookbook/primers/subms-perf-harness"
 documentation = "https://docs.rs/subms"
 keywords = ["benchmark", "performance", "perf-testing", "low-latency", "p99"]
 categories = ["development-tools::profiling", "development-tools::testing"]
