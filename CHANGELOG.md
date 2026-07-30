@@ -7,6 +7,22 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-07-30
+
+### Added
+
+- **Per-recipe bench configuration** (`bench_config` module): `SubMsBenchConfig`
+  is the typed load/merge-save model of a recipe's `.subms/perf/controls.json`.
+  Like `SubMsFeatureManifest` it round-trips through a zero-dependency JSON value
+  model that PRESERVES every field the harness does not own (the fleet
+  orchestrator's `sample_cap`/`rounds`, a third party's custom keys); a setter
+  touches only the key it names. Typed accessors: `cpu_pin` (a `SubMsCpuPin` enum
+  - `Single` = pin to one isolated core, the absent default for a single-threaded
+  recipe; `Multi` = pin across `cores` cores; `None` = unpinned across all cores;
+  a multi-threaded recipe uses `Multi`/`None` so a single-core pin does not starve
+  its worker thread; the legacy boolean form still reads), `cores`, `sample_cap`,
+  `reason`. New public surface: `SubMsBenchConfig`, `SubMsCpuPin`.
+
 ## [0.8.0] - 2026-07-29
 
 ### Added

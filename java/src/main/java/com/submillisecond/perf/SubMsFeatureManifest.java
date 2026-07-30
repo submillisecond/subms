@@ -321,7 +321,19 @@ public final class SubMsFeatureManifest {
 
     // ---------------- parser ----------------
 
-    private static final class JsonParser {
+    /** Shared zero-dep JSON entry points, reused by {@link SubMsBenchConfig}. */
+    static Object parseJson(String text) {
+        return new JsonParser(text.trim()).parse();
+    }
+
+    static String jsonToString(Object v) {
+        StringBuilder sb = new StringBuilder();
+        writePretty(v, sb, 0);
+        sb.append('\n');
+        return sb.toString();
+    }
+
+    static final class JsonParser {
         private final String s;
         private int pos;
 

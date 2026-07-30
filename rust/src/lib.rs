@@ -52,6 +52,7 @@
 //! ```
 
 pub mod bench;
+pub mod bench_config;
 pub mod bench_loops;
 pub mod env;
 pub mod feature;
@@ -70,6 +71,7 @@ pub use bench::{
     print_sweep, run_bench, run_sweep, summarize, summarize_lean, summarize_skipping,
     summarize_sweep, summarize_windowed, summary_to_json, sweep_to_json,
 };
+pub use bench_config::{SubMsBenchConfig, SubMsCpuPin};
 pub use bench_loops::{bench_indexed_op, bench_keyed_op, bench_templated_op};
 pub use feature::{Json, SubMsFeatureCategory, SubMsFeatureManifest, classify_feature, parse_json};
 pub use growth::{
