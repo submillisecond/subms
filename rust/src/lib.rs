@@ -73,7 +73,9 @@ pub use bench::{
 };
 pub use bench_config::{SubMsBenchConfig, SubMsCpuPin};
 pub use bench_loops::{bench_indexed_op, bench_keyed_op, bench_templated_op};
-pub use feature::{Json, SubMsFeatureCategory, SubMsFeatureManifest, classify_feature, parse_json};
+pub use feature::{
+    Json, SubMsFeatureCategory, SubMsFeatureManifest, SubMsP99Source, classify_feature, parse_json,
+};
 pub use growth::{
     GROWTH_VERSION, SubMsGrowthClass, SubMsGrowthRecipe, SubMsGrowthReport, SubMsGrowthRound,
     SubMsGrowthVerdict, assert_growth_holds, grow, growth_to_json,

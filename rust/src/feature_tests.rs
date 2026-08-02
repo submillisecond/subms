@@ -330,3 +330,144 @@ fn load_missing_then_save_creates_the_file_and_dirs() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------- p99 provenance ----------------
+
+#[test]
+fn unstamped_manifest_reads_as_local() {
+    // The conservative direction: an unattributed number is withheld, not
+    // published as if it came from the conformance box.
+    let m = SubMsFeatureManifest::new("rust");
+    assert_eq!(m.p99_source(), SubMsP99Source::Local);
+    assert_eq!(m.p99_source_ref(), None);
+}
+
+#[test]
+fn fleet_stamp_records_source_and_instance() {
+    let mut m = SubMsFeatureManifest::new("rust");
+    m.set_p99_source(SubMsP99Source::Fleet, Some("i-0abc123def456"));
+    assert_eq!(m.p99_source(), SubMsP99Source::Fleet);
+    assert_eq!(m.p99_source_ref(), Some("i-0abc123def456"));
+    let json = m.to_json();
+    assert!(json.contains("\"p99_source\": \"fleet\""));
+    assert!(json.contains("\"p99_source_ref\": \"i-0abc123def456\""));
+}
+
+#[test]
+fn local_stamp_clears_a_stale_fleet_reference() {
+    // The case that matters: a manifest captured on the box, then re-run on a
+    // laptop, must not keep claiming the box.
+    let mut m = SubMsFeatureManifest::new("rust");
+    m.set_p99_source(SubMsP99Source::Fleet, Some("i-0abc123def456"));
+    m.set_p99_source(SubMsP99Source::Local, None);
+    assert_eq!(m.p99_source(), SubMsP99Source::Local);
+    assert_eq!(m.p99_source_ref(), None);
+    assert!(!m.to_json().contains("p99_source_ref"));
+}
+
+#[test]
+fn a_reference_passed_with_local_is_ignored() {
+    let mut m = SubMsFeatureManifest::new("rust");
+    m.set_p99_source(SubMsP99Source::Local, Some("i-0abc123def456"));
+    assert_eq!(m.p99_source_ref(), None);
+}
+
+#[test]
+fn an_empty_fleet_reference_is_not_recorded() {
+    // An empty instance id is an absent one; writing it would look like
+    // provenance while identifying nothing.
+    let mut m = SubMsFeatureManifest::new("rust");
+    m.set_p99_source(SubMsP99Source::Fleet, Some(""));
+    assert_eq!(m.p99_source(), SubMsP99Source::Fleet);
+    assert_eq!(m.p99_source_ref(), None);
+}
+
+#[test]
+fn stamp_round_trips_through_load_str_and_preserves_other_fields() {
+    let mut m = SubMsFeatureManifest::new("rust");
+    m.set_p99_source(SubMsP99Source::Fleet, Some("i-1"));
+    let mut p99 = BTreeMap::new();
+    p99.insert("get".to_string(), 900u64);
+    m.set_feature("compaction", SubMsFeatureCategory::HotPath, &p99, "flat");
+    let reloaded = SubMsFeatureManifest::load_str("rust", &m.to_json());
+    assert_eq!(reloaded.p99_source(), SubMsP99Source::Fleet);
+    assert_eq!(reloaded.p99_source_ref(), Some("i-1"));
+    assert_eq!(
+        reloaded.category_of("compaction"),
+        Some(SubMsFeatureCategory::HotPath)
+    );
+}
+
+#[test]
+fn an_unknown_source_token_reads_as_local() {
+    // A typo withholds numbers instead of publishing them.
+    let m = SubMsFeatureManifest::load_str(
+        "rust",
+        "{\"lang\":\"rust\",\"p99_source\":\"ec2\",\"features\":{}}",
+    );
+    assert_eq!(m.p99_source(), SubMsP99Source::Local);
+    assert_eq!(SubMsP99Source::from_wire("fleet"), SubMsP99Source::Fleet);
+    assert_eq!(SubMsP99Source::from_wire("local"), SubMsP99Source::Local);
+    assert_eq!(SubMsP99Source::Fleet.as_str(), "fleet");
+    assert_eq!(SubMsP99Source::Local.as_str(), "local");
+}
+
+#[test]
+fn restamping_keeps_the_key_in_place() {
+    // set() preserves position, so a re-stamp must not shuffle the document.
+    let mut m = SubMsFeatureManifest::new("rust");
+    m.set_p99_source(SubMsP99Source::Local, None);
+    let first = m.to_json().find("p99_source").unwrap();
+    m.set_p99_source(SubMsP99Source::Fleet, Some("i-2"));
+    assert_eq!(m.to_json().find("p99_source").unwrap(), first);
+}
+
+#[test]
+fn env_provenance_defaults_to_local_when_unset() {
+    // Serialised with the fleet case below - std::env is process-global, so two
+    // tests mutating it in parallel would flake.
+    let _guard = env_lock();
+    unsafe { std::env::remove_var("SUBMS_FLEET_INSTANCE") };
+    assert_eq!(SubMsP99Source::from_env(), (SubMsP99Source::Local, None));
+    // A blank value is an unset one, not a nameless fleet box.
+    unsafe { std::env::set_var("SUBMS_FLEET_INSTANCE", "   ") };
+    assert_eq!(SubMsP99Source::from_env(), (SubMsP99Source::Local, None));
+    unsafe { std::env::remove_var("SUBMS_FLEET_INSTANCE") };
+}
+
+#[test]
+fn env_provenance_reads_the_instance_id() {
+    let _guard = env_lock();
+    unsafe { std::env::set_var("SUBMS_FLEET_INSTANCE", " i-0abc123 ") };
+    assert_eq!(
+        SubMsP99Source::from_env(),
+        (SubMsP99Source::Fleet, Some("i-0abc123".to_string()))
+    );
+    unsafe { std::env::remove_var("SUBMS_FLEET_INSTANCE") };
+}
+
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[test]
+fn a_feature_faster_than_base_is_not_reported_as_within_the_delta() {
+    // The auxiliary branch fires for anything at or below base, so a feature a
+    // third of the baseline was described as "within 10% of base" - a recorded
+    // reason that is simply false, on the one field that audits the category.
+    let sweep = [(1_024usize, 200u64), (65_536usize, 200u64)];
+    let (cat, why) = classify_feature(&sweep, Some(700), None);
+    assert_eq!(cat, SubMsFeatureCategory::Auxiliary);
+    assert!(why.contains("at or below base"), "{why}");
+    assert!(!why.contains("within"), "{why}");
+}
+
+#[test]
+fn a_feature_just_above_base_still_reads_as_within_the_delta() {
+    // 730 is above base 700 but inside the 10% band - the genuine non-effect.
+    let sweep = [(1_024usize, 730u64), (65_536usize, 730u64)];
+    let (cat, why) = classify_feature(&sweep, Some(700), None);
+    assert_eq!(cat, SubMsFeatureCategory::Auxiliary);
+    assert!(why.contains("within 10% of base"), "{why}");
+}

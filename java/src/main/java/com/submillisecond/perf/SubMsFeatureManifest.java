@@ -86,6 +86,16 @@ public final class SubMsFeatureManifest {
                         SubMsFeatureCategory.HOT_PATH,
                         "flat per-op p99 " + featureP99 + "ns, above base " + baseP99Ns + "ns");
             }
+            if (featureP99 < baseP99Ns) {
+                // Faster than base is still "no cost on the hot path", but it is
+                // NOT "within 10% of base" - saying so of a figure a third of the
+                // baseline makes the recorded reason wrong, and the reason is the
+                // only audit trail the category has.
+                return new Decision(
+                        SubMsFeatureCategory.AUXILIARY,
+                        "flat p99 " + featureP99 + "ns, at or below base " + baseP99Ns
+                                + "ns - no hot-path cost");
+            }
             return new Decision(
                     SubMsFeatureCategory.AUXILIARY,
                     String.format(
@@ -134,6 +144,44 @@ public final class SubMsFeatureManifest {
             r.put("features", new LinkedHashMap<String, Object>());
         }
         return new SubMsFeatureManifest(r);
+    }
+
+    /**
+     * Stamp which box the {@code p99ByStage} figures in this manifest came from.
+     *
+     * <p>A latency number describes the machine that produced it, and the feature
+     * bench runs wherever the author happens to be. Without this stamp a consumer
+     * cannot tell a conformance-box capture from a laptop run, and the site's
+     * renderer will not publish an unstamped number.
+     *
+     * <p>{@code reference} identifies the box when the source is
+     * {@link SubMsP99Source#FLEET} - the EC2 instance id the capture ran on. It is
+     * ignored for a local run, and any stale reference is cleared, so a manifest
+     * cannot keep pointing at a fleet box after being re-run on a laptop.
+     */
+    public void setP99Source(SubMsP99Source source, String reference) {
+        root.put("p99_source", source.asString());
+        if (source == SubMsP99Source.FLEET && reference != null && !reference.isEmpty()) {
+            root.put("p99_source_ref", reference);
+        } else {
+            root.remove("p99_source_ref");
+        }
+    }
+
+    /**
+     * The provenance currently recorded. An unstamped manifest reads as
+     * {@link SubMsP99Source#LOCAL} - the conservative direction, since it
+     * withholds numbers rather than publishing unattributed ones.
+     */
+    public SubMsP99Source p99Source() {
+        Object v = root.get("p99_source");
+        return v instanceof String ? SubMsP99Source.fromWire((String) v) : SubMsP99Source.LOCAL;
+    }
+
+    /** The EC2 instance id a fleet capture was stamped with, or null. */
+    public String p99SourceRef() {
+        Object v = root.get("p99_source_ref");
+        return v instanceof String ? (String) v : null;
     }
 
     /**

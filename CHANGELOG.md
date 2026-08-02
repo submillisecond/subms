@@ -7,6 +7,52 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`SubMsP99Source` - provenance for the figures in a feature manifest.**
+  A latency number describes the machine that produced it, and the feature bench
+  runs wherever it is invoked, so a manifest carrying `p99ByStage` without saying
+  where it came from is indistinguishable from a conformance-box capture. New
+  enum (`Local` / `Fleet`, wire tokens `local` / `fleet`) plus
+  `SubMsFeatureManifest::set_p99_source` / `p99_source` / `p99_source_ref`
+  (Rust) and `setP99Source` / `p99Source` / `p99SourceRef` (Java). An unstamped
+  manifest reads as `Local` and a token that does not parse reads as `Local`
+  too - both fail toward withholding numbers rather than publishing
+  unattributed ones. A local re-stamp CLEARS a stale fleet reference, so a
+  manifest cannot keep claiming a box it was last measured on; an empty
+  instance id is treated as absent, since it would look like provenance while
+  identifying nothing.
+- **`SubMsP99Source::from_env()` (Rust) / `fromEnv()` + `instanceFromEnv()`
+  (Java).** Reads `SUBMS_FLEET_INSTANCE`: present and non-blank means a fleet
+  capture on that EC2 instance, absent means local. The env var is the contract
+  between the fleet orchestrator and every recipe's `perf_features` target, so
+  no recipe hand-rolls its own detection and a run anywhere else is Local by
+  omission rather than by remembering to say so.
+
+### Fixed
+
+- **`classify_feature` claimed a feature was "within 10% of base" when it was
+  far below it.** The auxiliary branch fires for anything at or under the
+  baseline, so a feature measuring 200ns against a 700ns base was recorded as
+  "flat p99 200ns within 10% of base 700ns". The CATEGORY was right - no cost on
+  the hot path either way - but `perfReason` is the only audit trail the
+  decision has, and that one was simply false. A figure below base now reads
+  "at or below base Xns - no hot-path cost"; the within-the-band wording is
+  reserved for a figure that is genuinely inside it. Both ports, 2 tests each.
+- **`set_p99_source` with an empty fleet reference no longer records it.** The
+  Rust match arm accepted any `Some(_)`, so `Some("")` wrote an empty
+  `p99_source_ref` - a stamp that satisfies a presence check while naming no
+  box. Now guarded, matching the Java port.
+
+### Notes
+
+- 10 new tests per port (Rust 148 total, Java 160), covering the unstamped
+  default, the fleet stamp, the stale-reference clear, the ignored-on-local
+  reference, the empty id, a `load_str` round trip preserving other fields, an
+  unknown wire token, key position on re-stamp, and env derivation.
+- Consumers of the feature manifest must publish `p99ByStage` only when
+  `p99_source` is `fleet`. The site renderer already gates on this.
+
 ## [0.8.1] - 2026-07-30
 
 ### Added

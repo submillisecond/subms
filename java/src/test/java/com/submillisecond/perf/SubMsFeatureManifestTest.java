@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.TreeMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -309,5 +310,116 @@ final class SubMsFeatureManifestTest {
         assertEquals(SubMsFeatureCategory.AUXILIARY, SubMsFeatureCategory.fromWire("auxiliary"));
         assertNull(SubMsFeatureCategory.fromWire("nope"));
         assertNull(SubMsFeatureCategory.fromWire(null));
+    }
+
+    // ---------------- p99 provenance ----------------
+
+    @Test
+    void unstampedManifestReadsAsLocal() {
+        // The conservative direction: an unattributed number is withheld, not
+        // published as if it came from the conformance box.
+        SubMsFeatureManifest m = SubMsFeatureManifest.create("java");
+        assertEquals(SubMsP99Source.LOCAL, m.p99Source());
+        assertNull(m.p99SourceRef());
+    }
+
+    @Test
+    void fleetStampRecordsSourceAndInstance() {
+        SubMsFeatureManifest m = SubMsFeatureManifest.create("java");
+        m.setP99Source(SubMsP99Source.FLEET, "i-0abc123def456");
+        assertEquals(SubMsP99Source.FLEET, m.p99Source());
+        assertEquals("i-0abc123def456", m.p99SourceRef());
+        String json = m.toJson();
+        assertTrue(json.contains("\"p99_source\": \"fleet\""), json);
+        assertTrue(json.contains("\"p99_source_ref\": \"i-0abc123def456\""), json);
+    }
+
+    @Test
+    void localStampClearsAStaleFleetReference() {
+        // The case that matters: a manifest captured on the box, then re-run on a
+        // laptop, must not keep claiming the box.
+        SubMsFeatureManifest m = SubMsFeatureManifest.create("java");
+        m.setP99Source(SubMsP99Source.FLEET, "i-0abc123def456");
+        m.setP99Source(SubMsP99Source.LOCAL, null);
+        assertEquals(SubMsP99Source.LOCAL, m.p99Source());
+        assertNull(m.p99SourceRef());
+        assertFalse(m.toJson().contains("p99_source_ref"));
+    }
+
+    @Test
+    void aReferencePassedWithLocalIsIgnored() {
+        SubMsFeatureManifest m = SubMsFeatureManifest.create("java");
+        m.setP99Source(SubMsP99Source.LOCAL, "i-0abc123def456");
+        assertNull(m.p99SourceRef());
+    }
+
+    @Test
+    void anEmptyFleetReferenceIsNotRecorded() {
+        // An empty instance id is an absent one; writing it would look like
+        // provenance while identifying nothing.
+        SubMsFeatureManifest m = SubMsFeatureManifest.create("java");
+        m.setP99Source(SubMsP99Source.FLEET, "");
+        assertEquals(SubMsP99Source.FLEET, m.p99Source());
+        assertNull(m.p99SourceRef());
+    }
+
+    @Test
+    void stampRoundTripsThroughLoadStrAndPreservesOtherFields() {
+        SubMsFeatureManifest m = SubMsFeatureManifest.create("java");
+        m.setP99Source(SubMsP99Source.FLEET, "i-1");
+        Map<String, Long> p99 = new TreeMap<>();
+        p99.put("get", 900L);
+        m.setFeature("compaction", SubMsFeatureCategory.HOT_PATH, p99, "flat");
+        SubMsFeatureManifest reloaded = SubMsFeatureManifest.loadStr("java", m.toJson());
+        assertEquals(SubMsP99Source.FLEET, reloaded.p99Source());
+        assertEquals("i-1", reloaded.p99SourceRef());
+        assertEquals(SubMsFeatureCategory.HOT_PATH, reloaded.categoryOf("compaction"));
+    }
+
+    @Test
+    void anUnknownSourceTokenReadsAsLocal() {
+        // A typo withholds numbers instead of publishing them.
+        SubMsFeatureManifest m =
+                SubMsFeatureManifest.loadStr(
+                        "java", "{\"lang\":\"java\",\"p99_source\":\"ec2\",\"features\":{}}");
+        assertEquals(SubMsP99Source.LOCAL, m.p99Source());
+        assertEquals(SubMsP99Source.FLEET, SubMsP99Source.fromWire("fleet"));
+        assertEquals(SubMsP99Source.LOCAL, SubMsP99Source.fromWire("local"));
+        assertEquals(SubMsP99Source.LOCAL, SubMsP99Source.fromWire(null));
+        assertEquals("fleet", SubMsP99Source.FLEET.asString());
+        assertEquals("local", SubMsP99Source.LOCAL.asString());
+    }
+
+    @Test
+    void restampingKeepsTheKeyInPlace() {
+        // LinkedHashMap.put preserves position, so a re-stamp must not shuffle
+        // the document - matching the Rust port's set().
+        SubMsFeatureManifest m = SubMsFeatureManifest.create("java");
+        m.setP99Source(SubMsP99Source.LOCAL, null);
+        int first = m.toJson().indexOf("p99_source");
+        m.setP99Source(SubMsP99Source.FLEET, "i-2");
+        assertEquals(first, m.toJson().indexOf("p99_source"));
+    }
+
+    @Test
+    void aFeatureFasterThanBaseIsNotReportedAsWithinTheDelta() {
+        // The auxiliary branch fires for anything at or below base, so a feature
+        // a third of the baseline was described as "within 10% of base" - a
+        // recorded reason that is simply false, on the one field that audits the
+        // category.
+        long[][] sweep = {{1024, 200}, {65536, 200}};
+        SubMsFeatureManifest.Decision d = SubMsFeatureManifest.classify(sweep, 700L, null);
+        assertEquals(SubMsFeatureCategory.AUXILIARY, d.category());
+        assertTrue(d.reason().contains("at or below base"), d.reason());
+        assertFalse(d.reason().contains("within"), d.reason());
+    }
+
+    @Test
+    void aFeatureJustAboveBaseStillReadsAsWithinTheDelta() {
+        // 730 is above base 700 but inside the 10% band - the genuine non-effect.
+        long[][] sweep = {{1024, 730}, {65536, 730}};
+        SubMsFeatureManifest.Decision d = SubMsFeatureManifest.classify(sweep, 700L, null);
+        assertEquals(SubMsFeatureCategory.AUXILIARY, d.category());
+        assertTrue(d.reason().contains("within 10% of base"), d.reason());
     }
 }

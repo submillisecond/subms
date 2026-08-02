@@ -122,6 +122,18 @@ pub fn classify_feature(
                     SubMsFeatureCategory::HotPath,
                     format!("flat per-op p99 {}ns, above base {}ns", feature_p99, base),
                 )
+            } else if feature_p99 < base {
+                // Faster than base is still "no cost on the hot path", but it is
+                // NOT "within 10% of base" - saying so of a figure a third of the
+                // baseline makes the recorded reason wrong, and the reason is the
+                // only audit trail the category has.
+                (
+                    SubMsFeatureCategory::Auxiliary,
+                    format!(
+                        "flat p99 {}ns, at or below base {}ns - no hot-path cost",
+                        feature_p99, base
+                    ),
+                )
             } else {
                 (
                     SubMsFeatureCategory::Auxiliary,
@@ -166,6 +178,19 @@ impl Json {
     fn get_mut<'a>(obj: &'a mut [(String, Json)], key: &str) -> Option<&'a mut Json> {
         obj.iter_mut().find(|(k, _)| k == key).map(|(_, v)| v)
     }
+    /// Read a top-level key off this value, or `None` if it is not an object.
+    fn get(&self, key: &str) -> Option<&Json> {
+        match self {
+            Json::Obj(v) => v.iter().find(|(k, _)| k == key).map(|(_, val)| val),
+            _ => None,
+        }
+    }
+    /// Drop `key` if present. Used to clear a stamp that no longer applies, so
+    /// a local re-run cannot leave a stale fleet reference behind.
+    fn remove(obj: &mut Vec<(String, Json)>, key: &str) {
+        obj.retain(|(k, _)| k != key);
+    }
+
     /// Set `key` on an object, preserving position if it already exists.
     fn set(obj: &mut Vec<(String, Json)>, key: &str, val: Json) {
         if let Some(slot) = obj.iter_mut().find(|(k, _)| k == key) {
@@ -459,6 +484,56 @@ fn utf8_len(b: u8) -> usize {
     }
 }
 
+// ---------------- p99 provenance ----------------
+
+/// Which box a manifest's `p99ByStage` figures were measured on.
+///
+/// The feature bench runs wherever it is invoked, so a manifest that carries
+/// numbers without saying where they came from is indistinguishable from one
+/// captured on the conformance box. Consumers treat an unstamped manifest as
+/// [`SubMsP99Source::Local`] and do not publish its numbers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SubMsP99Source {
+    /// A dev machine. The CATEGORY still holds - it is read from the shape of a
+    /// size sweep, which does not depend on the box - but the numbers do not.
+    Local,
+    /// The conformance fleet box, identified by its EC2 instance id.
+    Fleet,
+}
+
+impl SubMsP99Source {
+    /// The lowercase wire token written to `.subms/features/<lang>.json`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SubMsP99Source::Local => "local",
+            SubMsP99Source::Fleet => "fleet",
+        }
+    }
+
+    /// Parse a wire token. Anything unrecognised reads as `Local`, so a typo
+    /// withholds numbers instead of publishing them.
+    pub fn from_wire(s: &str) -> Self {
+        match s {
+            "fleet" => SubMsP99Source::Fleet,
+            _ => SubMsP99Source::Local,
+        }
+    }
+
+    /// Read provenance from the environment: `(Fleet, Some(id))` when
+    /// `SUBMS_FLEET_INSTANCE` names a box, `(Local, None)` otherwise.
+    ///
+    /// The env var is the contract between the fleet orchestrator and every
+    /// recipe's `perf_features` target, so no recipe hand-rolls its own
+    /// detection - and a run anywhere else is Local by omission rather than by
+    /// remembering to say so.
+    pub fn from_env() -> (Self, Option<String>) {
+        match std::env::var("SUBMS_FLEET_INSTANCE") {
+            Ok(id) if !id.trim().is_empty() => (SubMsP99Source::Fleet, Some(id.trim().to_string())),
+            _ => (SubMsP99Source::Local, None),
+        }
+    }
+}
+
 // ---------------- the feature manifest ----------------
 
 /// A per-language feature manifest (`.subms/features/<lang>.json`). Wraps a
@@ -493,6 +568,49 @@ impl SubMsFeatureManifest {
                 m
             }
             _ => Self::new(lang),
+        }
+    }
+
+    /// Stamp which box the `p99ByStage` figures in this manifest came from.
+    ///
+    /// A latency number describes the machine that produced it, and the feature
+    /// bench runs wherever the author happens to be. Without this stamp a
+    /// consumer cannot tell a conformance-box capture from a laptop run, and the
+    /// site's renderer will not publish an unstamped number.
+    ///
+    /// `reference` identifies the box when the source is
+    /// [`SubMsP99Source::Fleet`] - the EC2 instance id the capture ran on. It is
+    /// ignored for a local run, and any stale reference is cleared, so a manifest
+    /// cannot keep pointing at a fleet box after being re-run on a laptop.
+    pub fn set_p99_source(&mut self, source: SubMsP99Source, reference: Option<&str>) {
+        let root = match self.root.as_object_mut() {
+            Some(r) => r,
+            None => return,
+        };
+        Json::set(root, "p99_source", Json::Str(source.as_str().to_string()));
+        match (source, reference) {
+            (SubMsP99Source::Fleet, Some(r)) if !r.is_empty() => {
+                Json::set(root, "p99_source_ref", Json::Str(r.to_string()))
+            }
+            _ => Json::remove(root, "p99_source_ref"),
+        }
+    }
+
+    /// The provenance currently recorded. An unstamped manifest reads as
+    /// [`SubMsP99Source::Local`] - the conservative direction, since it withholds
+    /// numbers rather than publishing unattributed ones.
+    pub fn p99_source(&self) -> SubMsP99Source {
+        match self.root.get("p99_source") {
+            Some(Json::Str(s)) => SubMsP99Source::from_wire(s),
+            _ => SubMsP99Source::Local,
+        }
+    }
+
+    /// The EC2 instance id a fleet capture was stamped with, if any.
+    pub fn p99_source_ref(&self) -> Option<&str> {
+        match self.root.get("p99_source_ref") {
+            Some(Json::Str(s)) => Some(s.as_str()),
+            _ => None,
         }
     }
 
