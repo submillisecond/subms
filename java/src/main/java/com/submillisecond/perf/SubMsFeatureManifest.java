@@ -39,9 +39,96 @@ public final class SubMsFeatureManifest {
      * non-effect -&gt; auxiliary.
      */
     private static final double HOT_PATH_DELTA = 0.10;
+    /**
+     * Per-op figures above this are REPORTED, never claimed. The site's promise is
+     * p99 &lt; 1 ms, so a flat op costing more has no business carrying a per-op
+     * claim however size-independent it is.
+     */
+    private static final long CLAIM_LINE_NS = 1_000_000L;
+    /**
+     * Scaling test: how close to the structural guard counts as "too close to
+     * call", as a fraction of the growth the guard demands.
+     */
+    private static final double INDETERMINATE_BAND = 0.25;
+    /**
+     * Base-delta test: half-width of the undecidable band, in EXCESS over base -
+     * indeterminate at 5%..15% above base.
+     *
+     * <p>Deliberately on the EXCESS rather than the guard. The guard sits only 10%
+     * above base, so a band around the guard wide enough to catch a straddler also
+     * swallows a feature measuring exactly base - the least ambiguous auxiliary
+     * there is.
+     */
+    private static final double BASE_DELTA_BAND = 0.05;
+
+    /**
+     * Provenance for features written in THIS run, stamped onto each by
+     * {@link #setFeature}.
+     *
+     * <p>The file-level {@code p99_source} is a summary and cannot be trusted
+     * alone: the manifest MERGE-writes, so a feature the current run did not
+     * measure keeps its previous numbers while inheriting whatever the file says.
+     * That is how a laptop-measured feature ended up inside a file stamped
+     * {@code fleet}.
+     */
+    private SubMsP99Source runSource;
+
+    private String runSourceRef;
 
     /** The outcome of a classification: the category and a short human reason. */
     public record Decision(SubMsFeatureCategory category, String reason) {}
+
+    /**
+     * One stage of a feature, classified on its own measurements.
+     *
+     * <p>A feature is not necessarily one kind of operation. {@code
+     * concurrent-reads} on the adaptive radix tree has a 1.2 us {@code get} and a
+     * 44 ms {@code snapshot}; a single category cannot describe both, and the
+     * rolled-up one published the snapshot under the get's label.
+     */
+    public record StageClass(long p99Ns, SubMsFeatureCategory category, String reason) {}
+
+    /**
+     * How much a category restricts what the feature may claim. The rollup takes
+     * the maximum, so one heavy stage cannot hide behind a fast one.
+     */
+    private static int restriction(SubMsFeatureCategory c) {
+        switch (c) {
+            case AUXILIARY:
+                return 0;
+            case HOT_PATH:
+                return 1;
+            case STRUCTURAL:
+                return 2;
+            case REPORTED:
+                return 3;
+            default:
+                return 4;
+        }
+    }
+
+    /**
+     * Roll per-stage categories into the one a feature publishes.
+     *
+     * <p>The MOST RESTRICTIVE stage wins. A feature whose stages are
+     * {@code hot-path} and {@code reported} is not a hot-path feature - it
+     * contains an operation that cannot carry the claim, and summarising it as
+     * hot-path is how a 44 ms snapshot came to sit under a per-op sub-ms label.
+     * The per-stage detail stays in the manifest, so a conservative summary costs
+     * the reader nothing.
+     */
+    public static SubMsFeatureCategory rollUpStages(Map<String, StageClass> stages) {
+        SubMsFeatureCategory worst = SubMsFeatureCategory.AUXILIARY;
+        if (stages == null) {
+            return worst;
+        }
+        for (StageClass s : stages.values()) {
+            if (restriction(s.category()) > restriction(worst)) {
+                worst = s.category();
+            }
+        }
+        return worst;
+    }
 
     /**
      * Decide a feature's category from a size sweep of {@code {size, p99Ns}} rows.
@@ -71,7 +158,19 @@ public final class SubMsFeatureManifest {
         if (maxN > minN && p99AtMin > 0) {
             double sizeRatio = (double) maxN / (double) minN;
             double p99Ratio = (double) p99AtMax / (double) p99AtMin;
-            if (p99Ratio - 1.0 >= STRUCTURAL_FRACTION * (sizeRatio - 1.0)) {
+            double needed = STRUCTURAL_FRACTION * (sizeRatio - 1.0);
+            double growth = p99Ratio - 1.0;
+            if (needed > 0.0) {
+                double margin = growth / needed;
+                if (margin >= 1.0 - INDETERMINATE_BAND && margin <= 1.0 + INDETERMINATE_BAND) {
+                    return new Decision(
+                            SubMsFeatureCategory.INDETERMINATE,
+                            String.format(
+                                    "p99 grew %.1fx over %.0fx N, against %.1fx needed for structural - too close to call",
+                                    p99Ratio, sizeRatio, needed + 1.0));
+                }
+            }
+            if (growth >= needed) {
                 return new Decision(
                         SubMsFeatureCategory.STRUCTURAL,
                         String.format(
@@ -80,7 +179,25 @@ public final class SubMsFeatureManifest {
             }
         }
         long featureP99 = Math.max(p99AtMin, p99AtMax);
+        // Above the claim line the hot-path/auxiliary question is moot: whatever
+        // its delta against base, a figure this size cannot be a per-op sub-ms
+        // claim. This bound is what stops a flat 30 ms op being published as one.
+        if (featureP99 > CLAIM_LINE_NS) {
+            return new Decision(
+                    SubMsFeatureCategory.REPORTED,
+                    "flat per-op p99 " + featureP99 + "ns, above the "
+                            + (CLAIM_LINE_NS / 1_000_000L) + "ms claim line - reported, not claimed");
+        }
         if (baseP99Ns != null && baseP99Ns > 0) {
+            double excess = (double) featureP99 / (double) baseP99Ns - 1.0;
+            if (excess >= HOT_PATH_DELTA - BASE_DELTA_BAND
+                    && excess <= HOT_PATH_DELTA + BASE_DELTA_BAND) {
+                return new Decision(
+                        SubMsFeatureCategory.INDETERMINATE,
+                        String.format(
+                                "flat p99 %dns is %.0f%% over base %dns, against a %.0f%% hot-path guard - too close to call",
+                                featureP99, excess * 100.0, baseP99Ns, HOT_PATH_DELTA * 100.0));
+            }
             if ((double) featureP99 > (double) baseP99Ns * (1.0 + HOT_PATH_DELTA)) {
                 return new Decision(
                         SubMsFeatureCategory.HOT_PATH,
@@ -160,6 +277,8 @@ public final class SubMsFeatureManifest {
      * cannot keep pointing at a fleet box after being re-run on a laptop.
      */
     public void setP99Source(SubMsP99Source source, String reference) {
+        this.runSource = source;
+        this.runSourceRef = reference;
         root.put("p99_source", source.asString());
         if (source == SubMsP99Source.FLEET && reference != null && !reference.isEmpty()) {
             root.put("p99_source_ref", reference);
@@ -215,6 +334,114 @@ public final class SubMsFeatureManifest {
             }
             entry.put("p99ByStage", stages);
         }
+        // Stamp the feature with the provenance of THIS run. The file-level field
+        // says where the file was last touched; this says where these numbers came
+        // from, which is the only one a reader can act on when the merge has left
+        // older features in place beside fresh ones.
+        if (runSource != null) {
+            entry.put("p99Source", runSource.asString());
+            if (runSource == SubMsP99Source.FLEET && runSourceRef != null && !runSourceRef.isEmpty()) {
+                entry.put("p99SourceRef", runSourceRef);
+            } else {
+                entry.remove("p99SourceRef");
+            }
+        } else {
+            // Nothing declared this run: drop a stale stamp rather than let a
+            // previous run's provenance describe numbers it did not produce.
+            entry.remove("p99Source");
+            entry.remove("p99SourceRef");
+        }
+    }
+
+    /**
+     * Merge-write a feature classified PER STAGE.
+     *
+     * <p>Writes {@code stages} (each with its own p99, category and reason) and
+     * sets the feature-level {@code perf} to the rollup, so a consumer reading
+     * only the summary still cannot mistake a mixed feature for a uniformly hot
+     * one. Preserves custom fields exactly like {@link #setFeature}.
+     */
+    @SuppressWarnings("unchecked")
+    public void setFeatureStages(String name, Map<String, StageClass> stages, String reason) {
+        SubMsFeatureCategory rolled = rollUpStages(stages);
+        Map<String, Long> flat = new TreeMap<>();
+        if (stages != null) {
+            for (Map.Entry<String, StageClass> e : stages.entrySet()) {
+                flat.put(e.getKey(), e.getValue().p99Ns());
+            }
+        }
+        setFeature(name, rolled, flat, reason);
+        Object f = root.get("features");
+        if (!(f instanceof LinkedHashMap)) {
+            return;
+        }
+        Object e = ((LinkedHashMap<String, Object>) f).get(name);
+        if (!(e instanceof LinkedHashMap)) {
+            return;
+        }
+        LinkedHashMap<String, Object> entry = (LinkedHashMap<String, Object>) e;
+        if (stages == null || stages.isEmpty()) {
+            entry.remove("stages");
+            return;
+        }
+        LinkedHashMap<String, Object> rows = new LinkedHashMap<>();
+        for (Map.Entry<String, StageClass> st : new TreeMap<>(stages).entrySet()) {
+            LinkedHashMap<String, Object> row = new LinkedHashMap<>();
+            row.put("p99", new Num(Long.toString(st.getValue().p99Ns())));
+            row.put("perf", st.getValue().category().asString());
+            row.put("perfReason", st.getValue().reason());
+            rows.put(st.getKey(), row);
+        }
+        entry.put("stages", rows);
+    }
+
+    /**
+     * The category recorded for one stage of a feature, if the manifest carries
+     * per-stage detail for it.
+     */
+    @SuppressWarnings("unchecked")
+    public SubMsFeatureCategory stageCategory(String feature, String stage) {
+        Object f = root.get("features");
+        if (!(f instanceof LinkedHashMap)) {
+            return null;
+        }
+        Object e = ((LinkedHashMap<String, Object>) f).get(feature);
+        if (!(e instanceof LinkedHashMap)) {
+            return null;
+        }
+        Object sts = ((LinkedHashMap<String, Object>) e).get("stages");
+        if (!(sts instanceof LinkedHashMap)) {
+            return null;
+        }
+        Object row = ((LinkedHashMap<String, Object>) sts).get(stage);
+        if (!(row instanceof LinkedHashMap)) {
+            return null;
+        }
+        Object v = ((LinkedHashMap<String, Object>) row).get("perf");
+        return v instanceof String ? SubMsFeatureCategory.fromWire((String) v) : null;
+    }
+
+    /**
+     * Provenance recorded for a single feature, falling back to the file-level
+     * stamp for a manifest written before per-feature provenance existed.
+     *
+     * <p>Prefer this over {@link #p99Source()}: a merge-written manifest can hold
+     * features from different runs, and only this distinguishes them.
+     */
+    @SuppressWarnings("unchecked")
+    public SubMsP99Source featureP99Source(String name) {
+        Object f = root.get("features");
+        if (f instanceof LinkedHashMap) {
+            Object e = ((LinkedHashMap<String, Object>) f).get(name);
+            if (e instanceof LinkedHashMap) {
+                Object v = ((LinkedHashMap<String, Object>) e).get("p99Source");
+                if (v instanceof String) {
+                    return SubMsP99Source.fromWire((String) v);
+                }
+            }
+        }
+        Object top = root.get("p99_source");
+        return top instanceof String ? SubMsP99Source.fromWire((String) top) : null;
     }
 
     /** The rating currently recorded for a feature, if any. */

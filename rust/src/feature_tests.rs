@@ -471,3 +471,257 @@ fn a_feature_just_above_base_still_reads_as_within_the_delta() {
     assert_eq!(cat, SubMsFeatureCategory::Auxiliary);
     assert!(why.contains("within 10% of base"), "{why}");
 }
+
+// ---- v2: the claim line and the undecidable band ----
+
+#[test]
+fn a_flat_op_above_the_claim_line_is_reported_not_claimed() {
+    // adaptive-radix-tree/serialize measured 30.7 ms flat and was published as a
+    // per-op sub-ms claim, because nothing bounded the hot-path branch.
+    let sweep = [(4_096usize, 30_000_000u64), (262_144usize, 30_674_448u64)];
+    let (cat, why) = classify_feature(&sweep, Some(1_000), None);
+    assert_eq!(cat, SubMsFeatureCategory::Reported);
+    assert!(why.contains("claim line"), "{why}");
+}
+
+#[test]
+fn the_claim_line_does_not_swallow_a_genuine_sub_ms_hot_path() {
+    let sweep = [(4_096usize, 900_000u64), (262_144usize, 950_000u64)];
+    let (cat, _) = classify_feature(&sweep, Some(100), None);
+    assert_eq!(cat, SubMsFeatureCategory::HotPath);
+}
+
+#[test]
+fn a_feature_costing_about_the_guard_is_indeterminate_not_a_coin_toss() {
+    // block-cache/metrics, both fleet runs. 269ns vs base 246 read auxiliary and
+    // 272ns vs base 245 read hot-path - a 3ns move flipping the category. Both
+    // now decline, which is the point: the same answer twice, and an honest one.
+    let (a, _) = classify_feature(&[(1usize, 269u64)], Some(246), None);
+    let (b, _) = classify_feature(&[(1usize, 272u64)], Some(245), None);
+    assert_eq!(a, SubMsFeatureCategory::Indeterminate);
+    assert_eq!(b, SubMsFeatureCategory::Indeterminate);
+}
+
+#[test]
+fn exactly_base_stays_auxiliary_and_is_never_indeterminate() {
+    // The band is on the EXCESS, not the guard. Banding the guard instead made
+    // this case indeterminate, which is wrong - zero delta is the least
+    // ambiguous auxiliary there is.
+    let (cat, _) = classify_feature(&[(1usize, 300u64)], Some(300), None);
+    assert_eq!(cat, SubMsFeatureCategory::Auxiliary);
+}
+
+#[test]
+fn a_sweep_straddling_the_structural_guard_is_indeterminate() {
+    // 64x N needs 32.5x growth to read structural. ART/serialize measured 39.3x
+    // locally and under it on the fleet, splitting across ports on one op.
+    let sweep = [(4_096usize, 1_000u64), (262_144usize, 35_000u64)];
+    let (cat, why) = classify_feature(&sweep, Some(100), None);
+    assert_eq!(cat, SubMsFeatureCategory::Indeterminate);
+    assert!(why.contains("too close to call"), "{why}");
+}
+
+#[test]
+fn a_clearly_superlinear_sweep_is_still_structural() {
+    // ART/range-scan on the fleet: 132.9x over 64x N. Nowhere near the band.
+    let sweep = [(4_096usize, 540_000u64), (262_144usize, 71_776_000u64)];
+    let (cat, _) = classify_feature(&sweep, None, None);
+    assert_eq!(cat, SubMsFeatureCategory::Structural);
+}
+
+#[test]
+fn an_override_still_wins_over_the_claim_line_and_the_band() {
+    let sweep = [(1usize, 30_000_000u64)];
+    let (cat, why) = classify_feature(&sweep, Some(100), Some(SubMsFeatureCategory::Structural));
+    assert_eq!(cat, SubMsFeatureCategory::Structural);
+    assert!(why.starts_with("override:"), "{why}");
+}
+
+#[test]
+fn every_category_round_trips_through_its_wire_value() {
+    for c in [
+        SubMsFeatureCategory::HotPath,
+        SubMsFeatureCategory::Structural,
+        SubMsFeatureCategory::Auxiliary,
+        SubMsFeatureCategory::Reported,
+        SubMsFeatureCategory::Indeterminate,
+    ] {
+        assert_eq!(SubMsFeatureCategory::from_wire(c.as_str()), Some(c));
+    }
+}
+
+// ---- v2: per-feature provenance ----
+
+#[test]
+fn a_feature_written_this_run_carries_this_runs_provenance() {
+    let mut m = SubMsFeatureManifest::new("rust");
+    m.set_p99_source(SubMsP99Source::Fleet, Some("i-07f269c7f5d290fc4"));
+    let mut p99 = BTreeMap::new();
+    p99.insert("get".to_string(), 300u64);
+    m.set_feature("counting", SubMsFeatureCategory::HotPath, &p99, "why");
+    assert_eq!(
+        m.feature_p99_source("counting"),
+        Some(SubMsP99Source::Fleet)
+    );
+    let json = m.to_json();
+    assert!(json.contains("\"p99Source\""), "{json}");
+    assert!(json.contains("i-07f269c7f5d290fc4"), "{json}");
+}
+
+#[test]
+fn a_feature_the_run_did_not_touch_keeps_its_own_provenance() {
+    // The bug this exists for: the manifest MERGE-writes, so a feature that is
+    // not re-measured keeps its old numbers. Under a file-level stamp alone it
+    // silently inherited the new one - a local figure inside a `fleet` file.
+    let mut first = SubMsFeatureManifest::new("rust");
+    first.set_p99_source(SubMsP99Source::Local, None);
+    let mut p99 = BTreeMap::new();
+    p99.insert("op".to_string(), 100u64);
+    first.set_feature("serde", SubMsFeatureCategory::Auxiliary, &p99, "local run");
+    let carried = first.to_json();
+
+    let mut second = SubMsFeatureManifest::load_str("rust", &carried);
+    second.set_p99_source(SubMsP99Source::Fleet, Some("i-abc123ff"));
+    second.set_feature("counting", SubMsFeatureCategory::HotPath, &p99, "fleet run");
+
+    assert_eq!(
+        second.feature_p99_source("counting"),
+        Some(SubMsP99Source::Fleet)
+    );
+    assert_eq!(
+        second.feature_p99_source("serde"),
+        Some(SubMsP99Source::Local),
+        "a carried-over feature must NOT inherit the fleet stamp"
+    );
+}
+
+#[test]
+fn a_pre_v2_manifest_falls_back_to_the_file_level_stamp() {
+    let legacy = r#"{"lang":"rust","p99_source":"fleet","features":{"x":{"perf":"hot-path"}}}"#;
+    let m = SubMsFeatureManifest::load_str("rust", legacy);
+    assert_eq!(m.feature_p99_source("x"), Some(SubMsP99Source::Fleet));
+}
+
+#[test]
+fn re_running_a_feature_locally_clears_its_fleet_reference() {
+    let mut m = SubMsFeatureManifest::new("rust");
+    m.set_p99_source(SubMsP99Source::Fleet, Some("i-abc123ff"));
+    let p99 = BTreeMap::new();
+    m.set_feature("x", SubMsFeatureCategory::Auxiliary, &p99, "fleet");
+    m.set_p99_source(SubMsP99Source::Local, None);
+    m.set_feature("x", SubMsFeatureCategory::Auxiliary, &p99, "local");
+    assert_eq!(m.feature_p99_source("x"), Some(SubMsP99Source::Local));
+    assert!(
+        !m.to_json().contains("i-abc123ff"),
+        "stale fleet ref survived a local re-run"
+    );
+}
+
+// ---- v2: per-stage classification ----
+
+fn stage(p99: u64, cat: SubMsFeatureCategory) -> SubMsStageClass {
+    SubMsStageClass {
+        p99_ns: p99,
+        category: cat,
+        reason: cat.as_str().to_string(),
+    }
+}
+
+#[test]
+fn a_mixed_feature_rolls_up_to_its_most_restrictive_stage() {
+    // adaptive-radix-tree/concurrent-reads: a 1227ns get and a 44ms snapshot,
+    // published under ONE hot-path label. The get is genuinely hot; the snapshot
+    // is not, and the rollup must not let it hide.
+    let mut stages = BTreeMap::new();
+    stages.insert(
+        "get".to_string(),
+        stage(1_227, SubMsFeatureCategory::HotPath),
+    );
+    stages.insert(
+        "snapshot".to_string(),
+        stage(44_037_700, SubMsFeatureCategory::Reported),
+    );
+    assert_eq!(roll_up_stages(&stages), SubMsFeatureCategory::Reported);
+}
+
+#[test]
+fn an_all_hot_feature_still_rolls_up_hot() {
+    let mut stages = BTreeMap::new();
+    stages.insert("add".to_string(), stage(60, SubMsFeatureCategory::HotPath));
+    stages.insert(
+        "contains".to_string(),
+        stage(58, SubMsFeatureCategory::HotPath),
+    );
+    assert_eq!(roll_up_stages(&stages), SubMsFeatureCategory::HotPath);
+}
+
+#[test]
+fn auxiliary_stages_never_drag_a_hot_feature_down() {
+    let mut stages = BTreeMap::new();
+    stages.insert(
+        "probe".to_string(),
+        stage(60, SubMsFeatureCategory::HotPath),
+    );
+    stages.insert(
+        "stats".to_string(),
+        stage(10, SubMsFeatureCategory::Auxiliary),
+    );
+    assert_eq!(roll_up_stages(&stages), SubMsFeatureCategory::HotPath);
+}
+
+#[test]
+fn one_indeterminate_stage_makes_the_feature_indeterminate() {
+    // Not knowing is more restrictive than knowing it is excluded: a summary
+    // that reads `structural` would imply the whole feature was measured.
+    let mut stages = BTreeMap::new();
+    stages.insert(
+        "a".to_string(),
+        stage(100, SubMsFeatureCategory::Structural),
+    );
+    stages.insert(
+        "b".to_string(),
+        stage(100, SubMsFeatureCategory::Indeterminate),
+    );
+    assert_eq!(roll_up_stages(&stages), SubMsFeatureCategory::Indeterminate);
+}
+
+#[test]
+fn set_feature_stages_writes_per_stage_detail_and_the_rollup() {
+    let mut m = SubMsFeatureManifest::new("rust");
+    m.set_p99_source(SubMsP99Source::Fleet, Some("i-abc123ff"));
+    let mut stages = BTreeMap::new();
+    stages.insert(
+        "get".to_string(),
+        stage(1_227, SubMsFeatureCategory::HotPath),
+    );
+    stages.insert(
+        "snapshot".to_string(),
+        stage(44_037_700, SubMsFeatureCategory::Reported),
+    );
+    m.set_feature_stages("concurrent-reads", &stages, "mixed");
+
+    assert_eq!(
+        m.stage_category("concurrent-reads", "get"),
+        Some(SubMsFeatureCategory::HotPath)
+    );
+    assert_eq!(
+        m.stage_category("concurrent-reads", "snapshot"),
+        Some(SubMsFeatureCategory::Reported)
+    );
+    assert_eq!(
+        m.feature_p99_source("concurrent-reads"),
+        Some(SubMsP99Source::Fleet)
+    );
+    let json = m.to_json();
+    // The rollup is what a summary-only consumer sees, and it must be the
+    // restrictive one.
+    assert!(json.contains("\"perf\": \"reported\""), "{json}");
+    // The flat shape stays populated so an older reader is not left blank.
+    assert!(json.contains("p99ByStage"), "{json}");
+}
+
+#[test]
+fn an_empty_stage_set_rolls_up_to_auxiliary() {
+    let stages: BTreeMap<String, SubMsStageClass> = BTreeMap::new();
+    assert_eq!(roll_up_stages(&stages), SubMsFeatureCategory::Auxiliary);
+}

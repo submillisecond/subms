@@ -422,4 +422,187 @@ final class SubMsFeatureManifestTest {
         assertEquals(SubMsFeatureCategory.AUXILIARY, d.category());
         assertTrue(d.reason().contains("within 10% of base"), d.reason());
     }
+
+    // ---- v2: the claim line and the undecidable band (mirrors the Rust suite) ----
+
+    @Test
+    void aFlatOpAboveTheClaimLineIsReportedNotClaimed() {
+        // adaptive-radix-tree/serialize measured 30.7 ms flat and was published as
+        // a per-op sub-ms claim, because nothing bounded the hot-path branch.
+        long[][] sweep = {{4_096L, 30_000_000L}, {262_144L, 30_674_448L}};
+        SubMsFeatureManifest.Decision d = SubMsFeatureManifest.classify(sweep, 1_000L, null);
+        assertEquals(SubMsFeatureCategory.REPORTED, d.category());
+        assertTrue(d.reason().contains("claim line"), d.reason());
+    }
+
+    @Test
+    void theClaimLineDoesNotSwallowAGenuineSubMsHotPath() {
+        long[][] sweep = {{4_096L, 900_000L}, {262_144L, 950_000L}};
+        assertEquals(
+                SubMsFeatureCategory.HOT_PATH,
+                SubMsFeatureManifest.classify(sweep, 100L, null).category());
+    }
+
+    @Test
+    void aFeatureCostingAboutTheGuardIsIndeterminateNotACoinToss() {
+        // block-cache/metrics, both fleet runs: 269ns vs base 246 read auxiliary,
+        // 272ns vs base 245 read hot-path - a 3ns move flipping the category.
+        assertEquals(
+                SubMsFeatureCategory.INDETERMINATE,
+                SubMsFeatureManifest.classify(new long[][] {{1L, 269L}}, 246L, null).category());
+        assertEquals(
+                SubMsFeatureCategory.INDETERMINATE,
+                SubMsFeatureManifest.classify(new long[][] {{1L, 272L}}, 245L, null).category());
+    }
+
+    @Test
+    void exactlyBaseStaysAuxiliaryAndIsNeverIndeterminate() {
+        // The band is on the EXCESS, not the guard - banding the guard made this
+        // indeterminate, which is wrong: zero delta is unambiguously auxiliary.
+        assertEquals(
+                SubMsFeatureCategory.AUXILIARY,
+                SubMsFeatureManifest.classify(new long[][] {{1L, 300L}}, 300L, null).category());
+    }
+
+    @Test
+    void aSweepStraddlingTheStructuralGuardIsIndeterminate() {
+        long[][] sweep = {{4_096L, 1_000L}, {262_144L, 35_000L}};
+        SubMsFeatureManifest.Decision d = SubMsFeatureManifest.classify(sweep, 100L, null);
+        assertEquals(SubMsFeatureCategory.INDETERMINATE, d.category());
+        assertTrue(d.reason().contains("too close to call"), d.reason());
+    }
+
+    @Test
+    void aClearlySuperlinearSweepIsStillStructural() {
+        long[][] sweep = {{4_096L, 540_000L}, {262_144L, 71_776_000L}};
+        assertEquals(
+                SubMsFeatureCategory.STRUCTURAL,
+                SubMsFeatureManifest.classify(sweep, null, null).category());
+    }
+
+    @Test
+    void everyCategoryRoundTripsThroughItsWireValue() {
+        for (SubMsFeatureCategory c : SubMsFeatureCategory.values()) {
+            assertEquals(c, SubMsFeatureCategory.fromWire(c.asString()));
+        }
+    }
+
+    // ---- v2: per-feature provenance (mirrors the Rust suite) ----
+
+    @Test
+    void aFeatureWrittenThisRunCarriesThisRunsProvenance() {
+        SubMsFeatureManifest m = SubMsFeatureManifest.create("java");
+        m.setP99Source(SubMsP99Source.FLEET, "i-07f269c7f5d290fc4");
+        Map<String, Long> p99 = new LinkedHashMap<>();
+        p99.put("get", 300L);
+        m.setFeature("counting", SubMsFeatureCategory.HOT_PATH, p99, "why");
+        assertEquals(SubMsP99Source.FLEET, m.featureP99Source("counting"));
+        assertTrue(m.toJson().contains("\"p99Source\""), m.toJson());
+        assertTrue(m.toJson().contains("i-07f269c7f5d290fc4"), m.toJson());
+    }
+
+    @Test
+    void aFeatureTheRunDidNotTouchKeepsItsOwnProvenance() {
+        // The manifest MERGE-writes, so a feature not re-measured keeps its old
+        // numbers. Under a file-level stamp alone it silently inherited the new
+        // one - a local figure inside a `fleet` file.
+        SubMsFeatureManifest first = SubMsFeatureManifest.create("java");
+        first.setP99Source(SubMsP99Source.LOCAL, null);
+        Map<String, Long> p99 = new LinkedHashMap<>();
+        p99.put("op", 100L);
+        first.setFeature("serde", SubMsFeatureCategory.AUXILIARY, p99, "local run");
+
+        SubMsFeatureManifest second = SubMsFeatureManifest.loadStr("java", first.toJson());
+        second.setP99Source(SubMsP99Source.FLEET, "i-abc123ff");
+        second.setFeature("counting", SubMsFeatureCategory.HOT_PATH, p99, "fleet run");
+
+        assertEquals(SubMsP99Source.FLEET, second.featureP99Source("counting"));
+        assertEquals(
+                SubMsP99Source.LOCAL,
+                second.featureP99Source("serde"),
+                "a carried-over feature must NOT inherit the fleet stamp");
+    }
+
+    @Test
+    void aPreV2ManifestFallsBackToTheFileLevelStamp() {
+        String legacy =
+                "{\"lang\":\"java\",\"p99_source\":\"fleet\",\"features\":{\"x\":{\"perf\":\"hot-path\"}}}";
+        SubMsFeatureManifest m = SubMsFeatureManifest.loadStr("java", legacy);
+        assertEquals(SubMsP99Source.FLEET, m.featureP99Source("x"));
+    }
+
+    @Test
+    void reRunningAFeatureLocallyClearsItsFleetReference() {
+        SubMsFeatureManifest m = SubMsFeatureManifest.create("java");
+        m.setP99Source(SubMsP99Source.FLEET, "i-abc123ff");
+        Map<String, Long> empty = new LinkedHashMap<>();
+        m.setFeature("x", SubMsFeatureCategory.AUXILIARY, empty, "fleet");
+        m.setP99Source(SubMsP99Source.LOCAL, null);
+        m.setFeature("x", SubMsFeatureCategory.AUXILIARY, empty, "local");
+        assertEquals(SubMsP99Source.LOCAL, m.featureP99Source("x"));
+        assertTrue(!m.toJson().contains("i-abc123ff"), "stale fleet ref survived a local re-run");
+    }
+
+    // ---- v2: per-stage classification (mirrors the Rust suite) ----
+
+    private static SubMsFeatureManifest.StageClass st(long p99, SubMsFeatureCategory c) {
+        return new SubMsFeatureManifest.StageClass(p99, c, c.asString());
+    }
+
+    @Test
+    void aMixedFeatureRollsUpToItsMostRestrictiveStage() {
+        // adaptive-radix-tree/concurrent-reads: a 1227ns get and a 44ms snapshot,
+        // published under ONE hot-path label.
+        Map<String, SubMsFeatureManifest.StageClass> stages = new LinkedHashMap<>();
+        stages.put("get", st(1_227L, SubMsFeatureCategory.HOT_PATH));
+        stages.put("snapshot", st(44_037_700L, SubMsFeatureCategory.REPORTED));
+        assertEquals(SubMsFeatureCategory.REPORTED, SubMsFeatureManifest.rollUpStages(stages));
+    }
+
+    @Test
+    void anAllHotFeatureStillRollsUpHot() {
+        Map<String, SubMsFeatureManifest.StageClass> stages = new LinkedHashMap<>();
+        stages.put("add", st(60L, SubMsFeatureCategory.HOT_PATH));
+        stages.put("contains", st(58L, SubMsFeatureCategory.HOT_PATH));
+        assertEquals(SubMsFeatureCategory.HOT_PATH, SubMsFeatureManifest.rollUpStages(stages));
+    }
+
+    @Test
+    void auxiliaryStagesNeverDragAHotFeatureDown() {
+        Map<String, SubMsFeatureManifest.StageClass> stages = new LinkedHashMap<>();
+        stages.put("probe", st(60L, SubMsFeatureCategory.HOT_PATH));
+        stages.put("stats", st(10L, SubMsFeatureCategory.AUXILIARY));
+        assertEquals(SubMsFeatureCategory.HOT_PATH, SubMsFeatureManifest.rollUpStages(stages));
+    }
+
+    @Test
+    void oneIndeterminateStageMakesTheFeatureIndeterminate() {
+        Map<String, SubMsFeatureManifest.StageClass> stages = new LinkedHashMap<>();
+        stages.put("a", st(100L, SubMsFeatureCategory.STRUCTURAL));
+        stages.put("b", st(100L, SubMsFeatureCategory.INDETERMINATE));
+        assertEquals(SubMsFeatureCategory.INDETERMINATE, SubMsFeatureManifest.rollUpStages(stages));
+    }
+
+    @Test
+    void setFeatureStagesWritesPerStageDetailAndTheRollup() {
+        SubMsFeatureManifest m = SubMsFeatureManifest.create("java");
+        m.setP99Source(SubMsP99Source.FLEET, "i-abc123ff");
+        Map<String, SubMsFeatureManifest.StageClass> stages = new LinkedHashMap<>();
+        stages.put("get", st(1_227L, SubMsFeatureCategory.HOT_PATH));
+        stages.put("snapshot", st(44_037_700L, SubMsFeatureCategory.REPORTED));
+        m.setFeatureStages("concurrent-reads", stages, "mixed");
+
+        assertEquals(SubMsFeatureCategory.HOT_PATH, m.stageCategory("concurrent-reads", "get"));
+        assertEquals(
+                SubMsFeatureCategory.REPORTED, m.stageCategory("concurrent-reads", "snapshot"));
+        assertEquals(SubMsP99Source.FLEET, m.featureP99Source("concurrent-reads"));
+        assertTrue(m.toJson().contains("p99ByStage"), m.toJson());
+    }
+
+    @Test
+    void anEmptyStageSetRollsUpToAuxiliary() {
+        assertEquals(
+                SubMsFeatureCategory.AUXILIARY,
+                SubMsFeatureManifest.rollUpStages(new LinkedHashMap<>()));
+    }
 }

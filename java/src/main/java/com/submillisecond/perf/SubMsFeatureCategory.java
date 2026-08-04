@@ -18,7 +18,24 @@ package com.submillisecond.perf;
 public enum SubMsFeatureCategory {
     HOT_PATH("hot-path"),
     STRUCTURAL("structural"),
-    AUXILIARY("auxiliary");
+    AUXILIARY("auxiliary"),
+    /**
+     * Flat and per-op, but above the sub-ms claim line -&gt; REPORTED, not claimed.
+     *
+     * <p>Distinct from {@link #STRUCTURAL}, which means O(n): an op can be
+     * genuinely size-independent and still cost 30 ms. Without this the classifier
+     * had no upper bound and published such a figure as a per-op claim.
+     */
+    REPORTED("reported"),
+    /**
+     * The measurement cannot separate this feature from the guard that would
+     * decide it -&gt; no category, and the reason says which test was too close.
+     *
+     * <p>Not a failure. A feature costing about what the base op costs has no true
+     * side of a 10% line, and picking one produces a verdict that flips between
+     * runs of unchanged code while looking authoritative.
+     */
+    INDETERMINATE("indeterminate");
 
     private final String wire;
 
@@ -43,6 +60,10 @@ public enum SubMsFeatureCategory {
                 return STRUCTURAL;
             case "auxiliary":
                 return AUXILIARY;
+            case "reported":
+                return REPORTED;
+            case "indeterminate":
+                return INDETERMINATE;
             default:
                 return null;
         }

@@ -7,6 +7,49 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-04
+
+### Added
+
+- **`SubMsFeatureCategory::Reported` / `REPORTED` - flat and per-op, but above the
+  1 ms claim line.** `classify_feature` had NO upper bound: any flat measurement
+  more than 10% above base returned `HotPath`, whether it read 65ns or 39 ms. A
+  cookbook recipe was publishing a 30.7 ms operation as a per-op sub-millisecond
+  claim. Distinct from `Structural`, which means O(n) - an op can be genuinely
+  size-independent and still cost 30 ms, and reusing `Structural` for it would
+  make that variant's own definition false.
+
+- **`SubMsFeatureCategory::Indeterminate` / `INDETERMINATE` - the measurement
+  cannot separate the feature from the guard.** Both tests now decline inside a
+  band rather than picking a side. Measured across 112 classified features: 30
+  (27%) sat within 1.35x of the guard that decided them, two flipped between
+  consecutive runs of UNCHANGED code on the same box (one on a 3 ns move), and
+  two disagreed across the Rust and Java ports of the same algorithm. Every one
+  of those four was the base-delta test; no scaling verdict flipped or split.
+
+  The base-delta band is expressed on the EXCESS over base (5%..15%), not on the
+  guard. Banding the guard - the obvious first cut - swallowed a feature
+  measuring exactly base, which is the least ambiguous auxiliary there is.
+
+  It narrows the problem rather than removing it: one observed flip came from the
+  BASE moving 36% while the feature moved 0.2%, and no band around a moving base
+  is stable. Documented at the constant rather than implied away.
+
+- **Per-feature provenance.** `set_feature` / `setFeature` now stamps each feature
+  with the provenance of the run that wrote it, and `feature_p99_source` /
+  `featureP99Source` reads it, falling back to the file-level stamp for older
+  manifests. The manifest MERGE-writes, so a feature the current run did not
+  measure keeps its previous numbers - and under a file-level stamp alone it
+  silently inherited the new one. A laptop-measured feature was sitting inside a
+  file marked `fleet`. A local re-run also clears a stale fleet reference rather
+  than leaving an instance id attached to laptop numbers.
+
+### Changed
+
+- `classify_feature` / `classify` may now return either new category. A consumer
+  matching exhaustively on the three previous values must handle both; the wire
+  values are `reported` and `indeterminate`.
+
 ## [0.8.2] - 2026-08-03
 
 ### Added

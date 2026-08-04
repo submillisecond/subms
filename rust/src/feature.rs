@@ -40,6 +40,19 @@ pub enum SubMsFeatureCategory {
     Structural,
     /// No hot-path workload, or a measured non-effect -> capability, no claim.
     Auxiliary,
+    /// Flat and per-op, but above the sub-ms claim line -> REPORTED, not claimed.
+    ///
+    /// Distinct from `Structural`, which means O(n): an op can be genuinely
+    /// size-independent and still cost 30 ms. Without this the classifier had no
+    /// upper bound at all and published such a figure as a per-op claim.
+    Reported,
+    /// The measurement cannot separate this feature from the guard that would
+    /// decide it -> no category, and the reason says which test was too close.
+    ///
+    /// Not a failure. A feature that genuinely costs about what the base op
+    /// costs has no true side of a 10% line, and picking one produces a verdict
+    /// that flips between runs of unchanged code while looking authoritative.
+    Indeterminate,
 }
 
 impl SubMsFeatureCategory {
@@ -48,17 +61,68 @@ impl SubMsFeatureCategory {
             SubMsFeatureCategory::HotPath => "hot-path",
             SubMsFeatureCategory::Structural => "structural",
             SubMsFeatureCategory::Auxiliary => "auxiliary",
+            SubMsFeatureCategory::Reported => "reported",
+            SubMsFeatureCategory::Indeterminate => "indeterminate",
         }
     }
-    /// Parse the manifest wire value (`hot-path` / `structural` / `auxiliary`).
+    /// Parse the manifest wire value (`hot-path` / `structural` / `auxiliary` /
+    /// `reported` / `indeterminate`).
     pub fn from_wire(s: &str) -> Option<SubMsFeatureCategory> {
         match s {
             "hot-path" => Some(SubMsFeatureCategory::HotPath),
             "structural" => Some(SubMsFeatureCategory::Structural),
             "auxiliary" => Some(SubMsFeatureCategory::Auxiliary),
+            "reported" => Some(SubMsFeatureCategory::Reported),
+            "indeterminate" => Some(SubMsFeatureCategory::Indeterminate),
             _ => None,
         }
     }
+}
+
+/// One stage of a feature, classified on its own measurements.
+///
+/// A feature is not necessarily one kind of operation. `concurrent-reads` on the
+/// adaptive radix tree has a 1.2 us `get` and a 44 ms `snapshot`; a single
+/// category cannot describe both, and the rolled-up one published the snapshot
+/// under the get's label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubMsStageClass {
+    pub p99_ns: u64,
+    pub category: SubMsFeatureCategory,
+    pub reason: String,
+}
+
+impl SubMsFeatureCategory {
+    /// How much a category restricts what the feature may claim. The rollup takes
+    /// the maximum, so one heavy stage cannot hide behind a fast one.
+    fn restriction(self) -> u8 {
+        match self {
+            // No measurable cost: restricts nothing.
+            SubMsFeatureCategory::Auxiliary => 0,
+            // A claim, but a claim nonetheless.
+            SubMsFeatureCategory::HotPath => 1,
+            // Excluded from the per-op claim, for a known reason.
+            SubMsFeatureCategory::Structural => 2,
+            SubMsFeatureCategory::Reported => 3,
+            // Not knowing is worse than knowing it is excluded.
+            SubMsFeatureCategory::Indeterminate => 4,
+        }
+    }
+}
+
+/// Roll per-stage categories into the one a feature publishes.
+///
+/// The MOST RESTRICTIVE stage wins. A feature whose stages are `hot-path` and
+/// `reported` is not a hot-path feature - it contains an operation that cannot
+/// carry the claim, and summarising it as hot-path is how a 44 ms snapshot came
+/// to sit under a per-op sub-ms label. The per-stage detail stays in the
+/// manifest, so the summary being conservative costs the reader nothing.
+pub fn roll_up_stages(stages: &BTreeMap<String, SubMsStageClass>) -> SubMsFeatureCategory {
+    stages
+        .values()
+        .map(|s| s.category)
+        .max_by_key(|c| c.restriction())
+        .unwrap_or(SubMsFeatureCategory::Auxiliary)
 }
 
 /// A feature that grows its p99 by at least this fraction of the relative size
@@ -68,6 +132,33 @@ const STRUCTURAL_FRACTION: f64 = 0.5;
 /// A flat feature whose p99 is within this fraction of the base op is a measured
 /// non-effect -> auxiliary (e.g. a metrics counter that adds nothing observable).
 const HOT_PATH_DELTA: f64 = 0.10;
+/// Per-op figures above this are REPORTED, never claimed. The site's whole
+/// promise is p99 < 1 ms, so a flat op costing more than that has no business
+/// carrying a per-op claim however size-independent it is.
+const CLAIM_LINE_NS: u64 = 1_000_000;
+/// Scaling test: how close to the structural guard counts as "too close to
+/// call", as a fraction of the growth the guard demands.
+///
+/// Calibrated against observed instability, not taste. Two features flipped
+/// between consecutive runs of UNCHANGED code on the same box: one at 1.01x of
+/// its guard (a 3 ns move), one whose own p99 shifted 0.2% while its BASE moved
+/// 36%. 0.25 covers both without swallowing features that are clearly one side.
+///
+/// It does not make every verdict stable - the 36% case can still land inside
+/// the band on one run and outside on the next. That is a limit of comparing
+/// against a base which is itself re-measured, and the honest read is that
+/// `Indeterminate` narrows the lie rather than eliminating it.
+const INDETERMINATE_BAND: f64 = 0.25;
+/// Base-delta test: half-width of the undecidable band, in EXCESS over base.
+/// Indeterminate when the excess lands in `HOT_PATH_DELTA +/- this` - 5%..15%
+/// above base.
+///
+/// Deliberately expressed on the EXCESS rather than on the guard. The guard sits
+/// only 10% above base, so a band around the guard wide enough to catch a
+/// straddler also swallows a feature measuring exactly base - the least
+/// ambiguous auxiliary there is. Banding the excess keeps "no delta" firmly
+/// auxiliary while still declining on the features that actually flip.
+const BASE_DELTA_BAND: f64 = 0.05;
 
 /// Decide a feature's category from a size sweep of `(structure_size, p99_ns)`
 /// measurements. `base_p99_ns` is the base op's p99 for the no-delta check
@@ -101,7 +192,23 @@ pub fn classify_feature(
         let p99_ratio = p99_at_max as f64 / p99_at_min as f64;
         // Structural iff p99 grew by at least STRUCTURAL_FRACTION of the size
         // growth: p99_ratio - 1 >= frac * (size_ratio - 1).
-        if p99_ratio - 1.0 >= STRUCTURAL_FRACTION * (size_ratio - 1.0) {
+        let needed = STRUCTURAL_FRACTION * (size_ratio - 1.0);
+        let growth = p99_ratio - 1.0;
+        if needed > 0.0 {
+            let margin = growth / needed;
+            if (1.0 - INDETERMINATE_BAND..=1.0 + INDETERMINATE_BAND).contains(&margin) {
+                return (
+                    SubMsFeatureCategory::Indeterminate,
+                    format!(
+                        "p99 grew {:.1}x over {:.0}x N, against {:.1}x needed for structural - too close to call",
+                        p99_ratio,
+                        size_ratio,
+                        needed + 1.0
+                    ),
+                );
+            }
+        }
+        if growth >= needed {
             return (
                 SubMsFeatureCategory::Structural,
                 format!(
@@ -115,8 +222,36 @@ pub fn classify_feature(
     // Flat / sub-linear. Above the base op by a real margin -> hot-path;
     // indistinguishable from base -> a measured non-effect -> auxiliary.
     let feature_p99 = p99_at_max.max(p99_at_min);
+    // Above the claim line the hot-path/auxiliary question is moot: whatever its
+    // delta against base, a figure this size cannot be a per-op sub-ms claim.
+    // This bound is what stops a flat 30 ms op being published as one.
+    if feature_p99 > CLAIM_LINE_NS {
+        return (
+            SubMsFeatureCategory::Reported,
+            format!(
+                "flat per-op p99 {}ns, above the {}ms claim line - reported, not claimed",
+                feature_p99,
+                CLAIM_LINE_NS / 1_000_000
+            ),
+        );
+    }
     match base_p99_ns {
         Some(base) if base > 0 => {
+            let excess = feature_p99 as f64 / base as f64 - 1.0;
+            if (HOT_PATH_DELTA - BASE_DELTA_BAND..=HOT_PATH_DELTA + BASE_DELTA_BAND)
+                .contains(&excess)
+            {
+                return (
+                    SubMsFeatureCategory::Indeterminate,
+                    format!(
+                        "flat p99 {}ns is {:.0}% over base {}ns, against a {:.0}% hot-path guard - too close to call",
+                        feature_p99,
+                        excess * 100.0,
+                        base,
+                        HOT_PATH_DELTA * 100.0
+                    ),
+                );
+            }
             if feature_p99 as f64 > base as f64 * (1.0 + HOT_PATH_DELTA) {
                 (
                     SubMsFeatureCategory::HotPath,
@@ -541,12 +676,21 @@ impl SubMsP99Source {
 /// harness does not own - only a feature's `perf` rating + `p99ByStage` are set.
 pub struct SubMsFeatureManifest {
     root: Json,
+    /// Provenance for features written in THIS run, stamped onto each one by
+    /// `set_feature`.
+    ///
+    /// The file-level `p99_source` is a summary and cannot be trusted alone: the
+    /// manifest MERGE-writes, so a feature the current run did not measure keeps
+    /// its previous numbers while inheriting whatever the file says. That is how
+    /// a laptop-measured feature ended up inside a file stamped `fleet`.
+    run_source: Option<(SubMsP99Source, Option<String>)>,
 }
 
 impl SubMsFeatureManifest {
     /// An empty manifest for `lang` (`{ "lang": <lang>, "features": {} }`).
     pub fn new(lang: &str) -> Self {
         SubMsFeatureManifest {
+            run_source: None,
             root: Json::Obj(vec![
                 ("lang".to_string(), Json::Str(lang.to_string())),
                 ("features".to_string(), Json::Obj(Vec::new())),
@@ -563,7 +707,10 @@ impl SubMsFeatureManifest {
         }
         match parse_json(trimmed) {
             Ok(root @ Json::Obj(_)) => {
-                let mut m = SubMsFeatureManifest { root };
+                let mut m = SubMsFeatureManifest {
+                    root,
+                    run_source: None,
+                };
                 m.ensure_features_obj();
                 m
             }
@@ -583,6 +730,7 @@ impl SubMsFeatureManifest {
     /// ignored for a local run, and any stale reference is cleared, so a manifest
     /// cannot keep pointing at a fleet box after being re-run on a laptop.
     pub fn set_p99_source(&mut self, source: SubMsP99Source, reference: Option<&str>) {
+        self.run_source = Some((source, reference.map(|r| r.to_string())));
         let root = match self.root.as_object_mut() {
             Some(r) => r,
             None => return,
@@ -667,6 +815,119 @@ impl SubMsFeatureManifest {
                 .collect();
             Json::set(entry, "p99ByStage", Json::Obj(stages));
         }
+        // Stamp the feature with the provenance of THIS run. The file-level
+        // field says where the file was last touched; this says where these
+        // numbers came from, which is the only one a reader can act on when the
+        // merge has left older features in place beside fresh ones.
+        match &self.run_source {
+            Some((source, reference)) => {
+                Json::set(entry, "p99Source", Json::Str(source.as_str().to_string()));
+                match (source, reference) {
+                    (SubMsP99Source::Fleet, Some(r)) if !r.is_empty() => {
+                        Json::set(entry, "p99SourceRef", Json::Str(r.clone()))
+                    }
+                    _ => Json::remove(entry, "p99SourceRef"),
+                }
+            }
+            // Nothing declared this run: drop a stale stamp rather than let a
+            // previous run's provenance describe numbers it did not produce.
+            None => {
+                Json::remove(entry, "p99Source");
+                Json::remove(entry, "p99SourceRef");
+            }
+        }
+    }
+
+    /// Merge-write a feature classified PER STAGE.
+    ///
+    /// Writes `stages` (each with its own p99, category and reason) and sets the
+    /// feature-level `perf` to the rollup, so a consumer reading only the summary
+    /// still cannot mistake a mixed feature for a uniformly hot one. Preserves
+    /// custom fields exactly like `set_feature`, and drops the older flat
+    /// `p99ByStage` on the features it rewrites so the two shapes never disagree.
+    pub fn set_feature_stages(
+        &mut self,
+        name: &str,
+        stages: &BTreeMap<String, SubMsStageClass>,
+        reason: &str,
+    ) {
+        let rolled = roll_up_stages(stages);
+        // Reuse set_feature for the entry plumbing, provenance stamp and rollup,
+        // passing the per-stage p99s so a reader of the old shape still sees them.
+        let flat: BTreeMap<String, u64> =
+            stages.iter().map(|(k, v)| (k.clone(), v.p99_ns)).collect();
+        self.set_feature(name, rolled, &flat, reason);
+        let root = match self.root.as_object_mut() {
+            Some(r) => r,
+            None => return,
+        };
+        let features = match Json::get_mut(root, "features").and_then(Json::as_object_mut) {
+            Some(f) => f,
+            None => return,
+        };
+        let entry = match Json::get_mut(features, name).and_then(Json::as_object_mut) {
+            Some(e) => e,
+            None => return,
+        };
+        let rows: Vec<(String, Json)> = stages
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    Json::Obj(vec![
+                        ("p99".to_string(), Json::Num(v.p99_ns.to_string())),
+                        (
+                            "perf".to_string(),
+                            Json::Str(v.category.as_str().to_string()),
+                        ),
+                        ("perfReason".to_string(), Json::Str(v.reason.clone())),
+                    ]),
+                )
+            })
+            .collect();
+        if rows.is_empty() {
+            Json::remove(entry, "stages");
+        } else {
+            Json::set(entry, "stages", Json::Obj(rows));
+        }
+    }
+
+    /// The category recorded for one stage of a feature, if the manifest carries
+    /// per-stage detail for it.
+    pub fn stage_category(&self, feature: &str, stage: &str) -> Option<SubMsFeatureCategory> {
+        let v = self
+            .root
+            .get("features")?
+            .get(feature)?
+            .get("stages")?
+            .get(stage)?
+            .get("perf")?;
+        match v {
+            Json::Str(s) => SubMsFeatureCategory::from_wire(s),
+            _ => None,
+        }
+    }
+
+    /// Provenance recorded for a single feature, falling back to the file-level
+    /// stamp for a manifest written before per-feature provenance existed.
+    ///
+    /// Prefer this over the file-level field: a merge-written manifest can hold
+    /// features from different runs, and only this distinguishes them.
+    pub fn feature_p99_source(&self, name: &str) -> Option<SubMsP99Source> {
+        fn text(v: Option<&Json>) -> Option<&str> {
+            match v {
+                Some(Json::Str(s)) => Some(s.as_str()),
+                _ => None,
+            }
+        }
+        let entry = self.root.get("features").and_then(|f| f.get(name));
+        if let Some(s) = text(entry.and_then(|e| e.get("p99Source"))) {
+            return Some(SubMsP99Source::from_wire(s));
+        }
+        // Pre-v2 manifests carry only the file-level stamp. Falling back to it
+        // is right for a file written before per-feature provenance existed;
+        // once a run has stamped the feature, that wins.
+        text(self.root.get("p99_source")).map(SubMsP99Source::from_wire)
     }
 
     /// The rating currently recorded for a feature, if any.
