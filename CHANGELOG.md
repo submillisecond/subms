@@ -7,6 +7,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-08-04
+
 ### Added
 
 - **Every Java harness stamps the JVM facts that change what a number MEANS.**
