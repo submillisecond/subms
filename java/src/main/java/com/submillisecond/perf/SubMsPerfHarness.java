@@ -48,6 +48,24 @@ public final class SubMsPerfHarness {
     public SubMsPerfHarness(String workload, String lang) {
         this.workload = Objects.requireNonNull(workload, "workload");
         this.lang     = Objects.requireNonNull(lang,     "lang");
+        stampRuntimeMeta();
+    }
+
+    /**
+     * Record the JVM facts that change what a Java number MEANS.
+     *
+     * <p>Stamped by the harness rather than by each recipe, because it is the
+     * same for every capture and a recipe that forgets produces a number nobody
+     * can situate. {@code jvm_heap_max} matters more than it looks: the same
+     * bench under a 256 MB and a 700 MB ceiling are different experiments, and a
+     * GC-bound tail is invisible in the percentiles that come out of it. Anything
+     * a recipe sets afterwards wins - these are defaults, not a lock.
+     */
+    private void stampRuntimeMeta() {
+        meta.put("java_version", System.getProperty("java.version", ""));
+        long maxMb = Runtime.getRuntime().maxMemory() / (1024L * 1024L);
+        meta.put("jvm_heap_max", maxMb + "m");
+        meta.put("jvm_vm", System.getProperty("java.vm.name", ""));
     }
 
     /** Set the samples_ns downsample cap (clamped to at least 1). Returns this. */

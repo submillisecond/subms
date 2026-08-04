@@ -7,6 +7,20 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Every Java harness stamps the JVM facts that change what a number MEANS.**
+  `SubMsPerfHarness` now records `java_version`, `jvm_vm` and `jvm_heap_max` into
+  `meta` at construction. Stamped by the harness rather than by each recipe,
+  because it is identical for every capture and a recipe that forgets produces a
+  number nobody can situate. A recipe setting the same key afterwards still wins.
+
+  `jvm_heap_max` matters more than it looks. Host RAM tells you about the box,
+  not about the run: the JVM takes a fraction of it, the same bench under a
+  256 MB and a 700 MB ceiling are different experiments, and a GC-bound tail does
+  not announce itself in the percentiles that come out. A capture that cannot say
+  which ceiling it ran under cannot be compared with one that can.
+
 ## [0.9.0] - 2026-08-04
 
 ### Added

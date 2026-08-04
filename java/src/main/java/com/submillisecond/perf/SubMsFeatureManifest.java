@@ -440,6 +440,22 @@ public final class SubMsFeatureManifest {
                 }
             }
         }
+        // An absent stamp means two different things, and conflating them
+        // reintroduces the bug this exists to prevent. In a PRE-V2 manifest
+        // nothing is stamped and the file-level field is the only provenance
+        // there is. In a v2 manifest, where some features ARE stamped, an
+        // unstamped one is a feature this run did not measure - handing it the
+        // file's stamp is exactly how a local figure came to sit inside a file
+        // marked `fleet`. Report null and let the caller treat unknown as
+        // unpublishable.
+        if (f instanceof LinkedHashMap) {
+            for (Object v : ((LinkedHashMap<String, Object>) f).values()) {
+                if (v instanceof LinkedHashMap
+                        && ((LinkedHashMap<String, Object>) v).containsKey("p99Source")) {
+                    return null;
+                }
+            }
+        }
         Object top = root.get("p99_source");
         return top instanceof String ? SubMsP99Source.fromWire((String) top) : null;
     }

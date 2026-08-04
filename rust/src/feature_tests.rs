@@ -725,3 +725,23 @@ fn an_empty_stage_set_rolls_up_to_auxiliary() {
     let stages: BTreeMap<String, SubMsStageClass> = BTreeMap::new();
     assert_eq!(roll_up_stages(&stages), SubMsFeatureCategory::Auxiliary);
 }
+
+
+#[test]
+fn a_carried_over_feature_in_a_v2_manifest_reports_no_provenance() {
+    // bloom/serde is never built, so a run never writes it - it survives every
+    // capture as a carry-over. Under a file-level stamp it read `fleet` inside a
+    // file whose other features were fleet-measured, which is the original bug.
+    // In a manifest where SOME feature is stamped, an unstamped one is a
+    // carry-over and must report nothing rather than inherit.
+    let mixed = r#"{"lang":"rust","p99_source":"fleet","features":{
+        "counting":{"perf":"hot-path","p99Source":"fleet"},
+        "serde":{"perf":"auxiliary"}}}"#;
+    let m = SubMsFeatureManifest::load_str("rust", mixed);
+    assert_eq!(m.feature_p99_source("counting"), Some(SubMsP99Source::Fleet));
+    assert_eq!(
+        m.feature_p99_source("serde"),
+        None,
+        "an unstamped feature beside stamped ones must not inherit the file stamp"
+    );
+}

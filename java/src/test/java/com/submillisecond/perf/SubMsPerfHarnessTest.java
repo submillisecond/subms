@@ -7,6 +7,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -318,5 +319,22 @@ final class SubMsPerfHarnessTest {
         s.record(2);
         assertEquals(1, obs.records.size(), "only the post-install record fires");
         assertEquals(2L, obs.records.get(0).ns());
+    }
+
+    @Test
+    void everyHarnessStampsTheJvmFactsThatChangeWhatANumberMeans() {
+        // The same bench under a 256 MB and a 700 MB ceiling are different
+        // experiments, and a GC-bound tail does not announce itself in the
+        // percentiles. Stamped by the harness so a recipe cannot forget.
+        SubMsPerfHarness h = new SubMsPerfHarness("w", "java");
+        assertTrue(h.meta().get("jvm_heap_max").endsWith("m"), h.meta().toString());
+        assertFalse(h.meta().get("java_version").isEmpty());
+    }
+
+    @Test
+    void aRecipeCanOverrideTheStampedRuntimeMeta() {
+        SubMsPerfHarness h = new SubMsPerfHarness("w", "java");
+        h.meta("jvm_heap_max", "700m");
+        assertEquals("700m", h.meta().get("jvm_heap_max"));
     }
 }

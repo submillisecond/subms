@@ -605,4 +605,21 @@ final class SubMsFeatureManifestTest {
                 SubMsFeatureCategory.AUXILIARY,
                 SubMsFeatureManifest.rollUpStages(new LinkedHashMap<>()));
     }
+
+    @Test
+    void aCarriedOverFeatureInAV2ManifestReportsNoProvenance() {
+        // bloom/serde is never built, so a run never writes it - it survives every
+        // capture as a carry-over, and under a file-level stamp it read `fleet`
+        // beside genuinely fleet-measured features. That is the original bug.
+        String mixed =
+                "{\"lang\":\"java\",\"p99_source\":\"fleet\",\"features\":{"
+                        + "\"counting\":{\"perf\":\"hot-path\",\"p99Source\":\"fleet\"},"
+                        + "\"serde\":{\"perf\":\"auxiliary\"}}}";
+        SubMsFeatureManifest m = SubMsFeatureManifest.loadStr("java", mixed);
+        assertEquals(SubMsP99Source.FLEET, m.featureP99Source("counting"));
+        assertEquals(
+                null,
+                m.featureP99Source("serde"),
+                "an unstamped feature beside stamped ones must not inherit the file stamp");
+    }
 }

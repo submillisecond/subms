@@ -924,9 +924,26 @@ impl SubMsFeatureManifest {
         if let Some(s) = text(entry.and_then(|e| e.get("p99Source"))) {
             return Some(SubMsP99Source::from_wire(s));
         }
-        // Pre-v2 manifests carry only the file-level stamp. Falling back to it
-        // is right for a file written before per-feature provenance existed;
-        // once a run has stamped the feature, that wins.
+        // An absent stamp means two different things, and conflating them
+        // reintroduces the bug this exists to prevent.
+        //
+        // In a PRE-V2 manifest nothing is stamped, and the file-level field is
+        // the only provenance there is - fall back to it. In a v2 manifest, where
+        // some features ARE stamped, an unstamped one is a feature this run did
+        // not measure: a carry-over. Handing it the file's stamp is exactly how a
+        // local figure came to sit inside a file marked `fleet`. Report nothing
+        // instead, and let the caller treat unknown as unpublishable.
+        let any_stamped = self
+            .root
+            .get("features")
+            .and_then(|f| match f {
+                Json::Obj(rows) => Some(rows),
+                _ => None,
+            })
+            .is_some_and(|rows| rows.iter().any(|(_, v)| v.get("p99Source").is_some()));
+        if any_stamped {
+            return None;
+        }
         text(self.root.get("p99_source")).map(SubMsP99Source::from_wire)
     }
 
