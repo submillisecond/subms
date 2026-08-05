@@ -726,7 +726,6 @@ fn an_empty_stage_set_rolls_up_to_auxiliary() {
     assert_eq!(roll_up_stages(&stages), SubMsFeatureCategory::Auxiliary);
 }
 
-
 #[test]
 fn a_carried_over_feature_in_a_v2_manifest_reports_no_provenance() {
     // bloom/serde is never built, so a run never writes it - it survives every
@@ -738,7 +737,10 @@ fn a_carried_over_feature_in_a_v2_manifest_reports_no_provenance() {
         "counting":{"perf":"hot-path","p99Source":"fleet"},
         "serde":{"perf":"auxiliary"}}}"#;
     let m = SubMsFeatureManifest::load_str("rust", mixed);
-    assert_eq!(m.feature_p99_source("counting"), Some(SubMsP99Source::Fleet));
+    assert_eq!(
+        m.feature_p99_source("counting"),
+        Some(SubMsP99Source::Fleet)
+    );
     assert_eq!(
         m.feature_p99_source("serde"),
         None,

@@ -14,31 +14,66 @@
 # locally before staging the new perf JSON).
 
 repos:
-  # subms-perf-diff: refuse the commit if any staged perf JSON regresses
-  # vs HEAD beyond the configured per-stage threshold. Mirrors the
-  # subms-action-diff CI gate.
-  - repo: https://github.com/submillisecond/subms-actions
-    rev: main                          # TODO: pin to a release tag once tagged
+  # Formatting gate. `cargo fmt --check` is the FIRST step of the rust CI job, so
+  # a formatting-only diff short-circuits clippy, both test runs and doc: the run
+  # reports a plain "ci failure" while every test is in fact passing, which is
+  # why such a failure is easy to leave sitting (it did, for a day, twice).
+  # Kept to fmt alone - clippy has to compile, and a hook slow enough to be
+  # resented is a hook people reach for --no-verify on.
+  - repo: local
     hooks:
-      - id: subms-perf-diff
-        # Override the default 10% global threshold for this repo's
-        # self-bench. record_ns is sub-100ns and noisy at that scale, so
-        # we tolerate more drift on it without losing the gate on slower
-        # stages (summarize, summary_to_json, diff_summary).
-        args: []
-        files: '.*perf.*\.json$'
-        # Per-stage thresholds applied across all matching files. These
-        # match the values in .github/workflows/perf.yml so local + CI
-        # agree on what counts as a regression.
-        env:
-          SUBMS_PRECOMMIT_THRESHOLD_PCT: "15"
-          SUBMS_PRECOMMIT_PER_STAGE: '{"time_closure":25,"record_ns":25,"summary_to_json":20}'
+      - id: cargo-fmt
+        name: cargo fmt --check (rust/)
+        entry: cargo fmt --manifest-path rust/Cargo.toml --check
+        language: system
+        files: '^rust/.*\.rs$'
+        pass_filenames: false
 
-  # Read-only summary hook - prints the percentile table for every staged
-  # perf JSON. Useful even without the diff (e.g. first commit of a new
-  # bench, or when reviewing someone else's perf output in a PR).
-  - repo: https://github.com/submillisecond/subms-actions
-    rev: main
-    hooks:
-      - id: subms-perf-summary
-        files: '.*perf.*\.json$'
+  # DISABLED until subms-actions ships the fix below and it is pushed to main.
+  #
+  # These two hooks had never actually run - nobody had pre-commit installed, so
+  # the config was aspirational rather than a gate. The moment it was installed
+  # they aborted EVERY commit, before any hook executed:
+  #
+  #   AssertionError: `language: node` must have package.json or additional_dependencies
+  #
+  # pre-commit builds a hook repo's environment before running anything, so a
+  # repo that cannot be built takes the whole commit down, including the fmt gate
+  # above. subms-actions declared `language: node` with no package.json and an
+  # `entry:` giving a path relative to the hook repo, which does not resolve - the
+  # entry has to be a bin name that the installed package puts on PATH.
+  #
+  # Fixed in subms-actions (package.json with a `subms-perf-diff` bin, entry
+  # switched to that name), but pre-commit clones that repo from GitHub, so the
+  # fix is inert here until it is pushed. Re-enable then - and pin `rev:` to a tag
+  # at the same time, since pre-commit never re-resolves a mutable ref like `main`
+  # after the first install, which is exactly how a stale broken env persists.
+  #
+  # # subms-perf-diff: refuse the commit if any staged perf JSON regresses
+  # # vs HEAD beyond the configured per-stage threshold. Mirrors the
+  # # subms-action-diff CI gate.
+  # - repo: https://github.com/submillisecond/subms-actions
+  #   rev: main                          # TODO: pin to a release tag once tagged
+  #   hooks:
+  #     - id: subms-perf-diff
+  #       # Override the default 10% global threshold for this repo's
+  #       # self-bench. record_ns is sub-100ns and noisy at that scale, so
+  #       # we tolerate more drift on it without losing the gate on slower
+  #       # stages (summarize, summary_to_json, diff_summary).
+  #       args: []
+  #       files: '.*perf.*\.json$'
+  #       # Per-stage thresholds applied across all matching files. These
+  #       # match the values in .github/workflows/perf.yml so local + CI
+  #       # agree on what counts as a regression.
+  #       env:
+  #         SUBMS_PRECOMMIT_THRESHOLD_PCT: "15"
+  #         SUBMS_PRECOMMIT_PER_STAGE: '{"time_closure":25,"record_ns":25,"summary_to_json":20}'
+
+  # # Read-only summary hook - prints the percentile table for every staged
+  # # perf JSON. Useful even without the diff (e.g. first commit of a new
+  # # bench, or when reviewing someone else's perf output in a PR).
+  # - repo: https://github.com/submillisecond/subms-actions
+  #   rev: main
+  #   hooks:
+  #     - id: subms-perf-summary
+  #       files: '.*perf.*\.json$'
