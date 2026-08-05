@@ -7,6 +7,27 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **The storage-growth harness now exists in Java too** (`SubMsGrowth`,
+  `SubMsGrowthRecipe`), mirroring the Rust module and emitting the same
+  byte-equivalent growth JSON. Until now a growth curve could only be captured
+  from the Rust port, so a recipe's published footprint was one port's
+  measurement presented as the recipe's.
+
+  This is a fair comparison rather than a GC reading, because the footprint is
+  supplied by the recipe: `diskBytes` / `memoryBytes` / `liveBytes` ask the
+  structure what it is holding (entries times entry size, the sum of its file
+  sizes). The harness never inspects the heap. Running the same config through
+  both ports of `subms-block-cache` produced documents identical on every
+  non-timing field.
+
+  Both suites now pin the same exact JSON fixture, latencies zeroed so the
+  encoder is the only variable. The fixture deliberately includes an exact
+  rounding tie (1568/1024 = 1.53125): Rust's `{:.4}` is half-to-even and Java's
+  `String.format` is half-up, so the Java encoder rounds through `BigDecimal`
+  with `HALF_EVEN` to match.
+
 ## [0.9.1] - 2026-08-04
 
 ### Added

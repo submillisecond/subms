@@ -131,3 +131,50 @@ fn json_has_verdict_and_rounds() {
     assert!(s.contains("\"sstables\":2"));
     assert!(s.contains("\"amplification\":"));
 }
+
+/// The exact bytes of a growth document, latencies zeroed so the only variable
+/// left is the encoder. The Java suite pins this same string
+/// (`SubMsGrowthCrossPortTest`).
+///
+/// A round-trip proves a port agrees with itself and nothing more - the ART
+/// serializer shipped two mutually unreadable wire versions while both suites
+/// were green on their own round-trips. A shared literal is what actually holds
+/// two encoders together.
+#[test]
+fn json_bytes_match_the_cross_port_fixture() {
+    let mut r = ScriptedRecipe {
+        disk: vec![1000, 1568],
+        live: 1024,
+        class: SubMsGrowthClass::AmplificationBounded,
+        bound: 3.0,
+        round: 0,
+    };
+    let mut report = grow(&mut r, "rust");
+    report.lang = "fixture".to_string();
+    for round in &mut report.rounds {
+        round.p50_ns = 0;
+        round.p99_ns = 0;
+        round.max_ns = 0;
+    }
+    let mut buf: Vec<u8> = Vec::new();
+    growth_to_json(&report, &mut buf).unwrap();
+    assert_eq!(String::from_utf8(buf).unwrap(), GROWTH_JSON_FIXTURE);
+}
+
+/// Round 2 is 1568/1024 = 1.53125 exactly - a tie at the 5th decimal, so the
+/// fixture also pins the rounding mode at the cut (half-to-even -> 1.5312).
+/// Java's `String.format("%.4f")` rounds half-up and would write 1.5313.
+const GROWTH_JSON_FIXTURE: &str = concat!(
+    r#"{"kind":"growth","workload":"scripted","lang":"fixture","op":"op","growth_version":2,"#,
+    r#""verdict":{"class":"amplification_bounded","bound":3.0000,"holds":true,"#,
+    r#""observed":1.5312,"#,
+    r#""summary":"max footprint/live amplification 1.53x vs ceiling 3.00x"},"#,
+    r#""compact":false,"rounds":["#,
+    r#"{"round":1,"ops":4,"cumulative_ops":4,"disk_bytes":1000,"memory_bytes":0,"#,
+    r#""total_bytes":1000,"live_bytes":1024,"amplification":0.9766,"#,
+    r#""structures":{"sstables":1},"p50_ns":0,"p99_ns":0,"max_ns":0},"#,
+    r#"{"round":2,"ops":4,"cumulative_ops":8,"disk_bytes":1568,"memory_bytes":0,"#,
+    r#""total_bytes":1568,"live_bytes":1024,"amplification":1.5312,"#,
+    r#""structures":{"sstables":2},"p50_ns":0,"p99_ns":0,"max_ns":0}"#,
+    r#"]}"#,
+);
