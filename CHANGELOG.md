@@ -7,6 +7,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-08-05
+
 ### Added
 
 - **The storage-growth harness now exists in Java too** (`SubMsGrowth`,
@@ -27,6 +29,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   rounding tie (1568/1024 = 1.53125): Rust's `{:.4}` is half-to-even and Java's
   `String.format` is half-up, so the Java encoder rounds through `BigDecimal`
   with `HALF_EVEN` to match.
+
+  The Rust port is unchanged in this release beyond that fixture test - `growth`
+  has been there since 0.8. Both ports bump together anyway, so nobody has to
+  work out which language is a version behind.
 
 ## [0.9.1] - 2026-08-04
 
