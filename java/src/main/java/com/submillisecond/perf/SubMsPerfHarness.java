@@ -80,7 +80,7 @@ public final class SubMsPerfHarness {
      * via {@code mvn exec:java}). {@code SubMsPerfHarnessTest} asserts the two
      * agree with the pom, so the fallback cannot silently go stale.
      */
-    static final String HARNESS_VERSION = "0.9.2";
+    static final String HARNESS_VERSION = "0.9.3";
 
     private static String harnessVersion() {
         Package p = SubMsPerfHarness.class.getPackage();

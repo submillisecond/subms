@@ -7,6 +7,19 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- The jar manifest carries `Implementation-Version`, so `SubMsPerfHarness` reads the harness version from the artifact rather than always falling back to a hand-maintained constant. Shipped 0.9.3 without it, which left the manifest path dead code and the constant the only source - it works, and the pom-vs-constant test guards it, but a version nobody has to remember to bump is the better answer.
+
+## [0.9.3] - 2026-08-06
+
+### Added
+
+- Every capture stamps `harness_version` into `meta`, on both ports. The harness is the instrument, and a measurement that does not name its instrument is reconstructible only by luck - the same recipe run under two harness releases is two experiments.
+- Rust reads `env!("CARGO_PKG_VERSION")`, so it cannot drift from the crate it shipped in.
+- Java reads the jar manifest, falling back to a constant for classes-directory runs, which is how the benches execute under `mvn exec:java`. The constant is the drift risk, so a test reads `pom.xml` and fails the build when the two disagree rather than letting a wrong version reach every published capture.
+- Prompted by a reader asking whether a published number carries enough provenance to be rebuilt. The bench orchestrator already recorded the box, the commit and the compiler; the instrument itself was the gap.
+
 ## [0.9.2] - 2026-08-05
 
 ### Added

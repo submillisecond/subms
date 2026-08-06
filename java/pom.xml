@@ -4,7 +4,7 @@
 
     <groupId>com.submillisecond</groupId>
     <artifactId>subms</artifactId>
-    <version>0.9.2</version>
+    <version>0.9.3</version>
     <packaging>jar</packaging>
 
     <name>subms</name>
@@ -81,6 +81,26 @@
 
     <build>
         <plugins>
+            <!-- Implementation-Version in the manifest is what
+                 SubMsPerfHarness reads to stamp `harness_version` into every
+                 capture. Without it getImplementationVersion() returns null
+                 even when running from the jar, so the hand-maintained
+                 constant was the only path and the manifest route was dead
+                 code. A consumer depending on the jar now gets the version
+                 from the artifact itself rather than from a string somebody
+                 has to remember to bump. -->
+            <plugin>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.2</version>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <addDefaultImplementationEntries>true</addDefaultImplementationEntries>
+                            <addDefaultSpecificationEntries>true</addDefaultSpecificationEntries>
+                        </manifest>
+                    </archive>
+                </configuration>
+            </plugin>
             <plugin>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.5.5</version>
