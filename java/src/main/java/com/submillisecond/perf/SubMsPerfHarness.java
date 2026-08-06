@@ -62,10 +62,30 @@ public final class SubMsPerfHarness {
      * a recipe sets afterwards wins - these are defaults, not a lock.
      */
     private void stampRuntimeMeta() {
+        meta.put("harness_version", harnessVersion());
         meta.put("java_version", System.getProperty("java.version", ""));
         long maxMb = Runtime.getRuntime().maxMemory() / (1024L * 1024L);
         meta.put("jvm_heap_max", maxMb + "m");
         meta.put("jvm_vm", System.getProperty("java.vm.name", ""));
+    }
+
+    /**
+     * The harness release that took the measurement. The instrument's own version
+     * belongs in every capture: the same recipe measured by two harness releases
+     * is two experiments, and a number that does not name its instrument is
+     * reconstructible only by luck.
+     *
+     * <p>Read from the jar manifest when running as a dependency; the constant is
+     * the fallback for a classes-directory run (which is how the benches execute,
+     * via {@code mvn exec:java}). {@code SubMsPerfHarnessTest} asserts the two
+     * agree with the pom, so the fallback cannot silently go stale.
+     */
+    static final String HARNESS_VERSION = "0.9.2";
+
+    private static String harnessVersion() {
+        Package p = SubMsPerfHarness.class.getPackage();
+        String v = p == null ? null : p.getImplementationVersion();
+        return v == null || v.isEmpty() ? HARNESS_VERSION : v;
     }
 
     /** Set the samples_ns downsample cap (clamped to at least 1). Returns this. */

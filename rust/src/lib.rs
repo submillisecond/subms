@@ -288,11 +288,20 @@ pub struct SubMsPerfHarness {
 
 impl SubMsPerfHarness {
     pub fn new(workload: &str, lang: &str) -> Self {
+        // The harness is the instrument, so a capture that does not name its
+        // version is only reconstructible by luck - the same recipe measured by
+        // two harness releases is two experiments. Compile-time, so it cannot
+        // drift from the crate it shipped with.
+        let mut meta = BTreeMap::new();
+        meta.insert(
+            "harness_version".to_string(),
+            env!("CARGO_PKG_VERSION").to_string(),
+        );
         Self {
             workload: Arc::from(workload),
             lang: Arc::from(lang),
             inputs: BTreeMap::new(),
-            meta: BTreeMap::new(),
+            meta,
             stages: Vec::new(),
             observer: None,
             sample_cap: 500,

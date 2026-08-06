@@ -337,4 +337,28 @@ final class SubMsPerfHarnessTest {
         h.meta("jvm_heap_max", "700m");
         assertEquals("700m", h.meta().get("jvm_heap_max"));
     }
+
+    /**
+     * The version fallback is a hand-maintained constant, so it can drift from the
+     * pom on any release. Reading the pom here turns that from a silent wrong
+     * number in every published capture into a failing build.
+     */
+    @Test
+    void harnessVersionConstantMatchesThePom() throws Exception {
+        String pom = java.nio.file.Files.readString(java.nio.file.Path.of("pom.xml"));
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("<artifactId>subms</artifactId>\\s*<version>([^<]+)</version>")
+                .matcher(pom);
+        org.junit.jupiter.api.Assertions.assertTrue(m.find(), "could not read the project version from pom.xml");
+        org.junit.jupiter.api.Assertions.assertEquals(
+                m.group(1), SubMsPerfHarness.HARNESS_VERSION,
+                "SubMsPerfHarness.HARNESS_VERSION is stale - bump it with the pom");
+    }
+
+    @Test
+    void everyCaptureNamesTheHarnessThatTookIt() {
+        SubMsPerfHarness h = new SubMsPerfHarness("w", "java");
+        org.junit.jupiter.api.Assertions.assertEquals(
+                SubMsPerfHarness.HARNESS_VERSION, h.meta().get("harness_version"));
+    }
 }
