@@ -9,6 +9,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `SubMsLcg::new(0)` and `SubMsLcg::new(1)` returned the same stream, because the constructor did `seed | 1`. Recipes warm on `seed` and measure on `seed + 1`, so at the default seed 0 every Rust recipe replayed its warm-up keys as its measured ones. The OR was defending against a collapse that cannot happen: the increment is odd, so the period is 2^64 from any seed including 0. The seed is now the raw state, and seeds 0 and 1 share none of their first 50,000 draws. Visible in `subms-treap`, whose Rust bench ended at 49,999 live entries against Java's 55,000 - the two ports were not measuring the same tree. It moves every Rust recipe's benched key set, so it invalidates every Rust capture taken before it. Java is unaffected: that port has no LCG and its recipes use `java.util.Random`, which scrambles the seed and does not alias 0 onto 1.
+- Manifests move to 0.9.4 on both ports. The JSON contract is untouched - the LCG generates test data and appears in no emitted field - and the Java port carries no code change beyond `HARNESS_VERSION`, bumped in lockstep so the two stamps agree.
+
 - The jar manifest carries `Implementation-Version`, so `SubMsPerfHarness` reads the harness version from the artifact rather than always falling back to a hand-maintained constant. Shipped 0.9.3 without it, which left the manifest path dead code and the constant the only source - it works, and the pom-vs-constant test guards it, but a version nobody has to remember to bump is the better answer.
 
 ## [0.9.3] - 2026-08-06
