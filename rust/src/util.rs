@@ -5,8 +5,12 @@ pub struct SubMsLcg(u64);
 
 impl SubMsLcg {
     pub fn new(seed: u64) -> Self {
-        // OR-1 so seed=0 doesn't collapse the sequence.
-        SubMsLcg(seed | 1)
+        // The seed is the raw state. An earlier version OR-ed in 1 to "stop seed 0
+        // collapsing", which it never did (the increment is odd, so the period is
+        // 2^64 from any seed) and which aliased new(0) onto new(1). Recipes warm on
+        // `seed` and measure on `seed + 1`, so at the default seed 0 that replayed
+        // the warm-up keys as the measured ones.
+        SubMsLcg(seed)
     }
 
     pub fn next_u32(&mut self) -> u32 {
