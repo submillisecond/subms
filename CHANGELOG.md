@@ -5,6 +5,13 @@ All notable changes to `subms` (the sub-millisecond perf harness) are documented
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `ts/`: a TypeScript sibling of the harness for Node 22+ (`@submillisecond/subms`, private, unpublished). `SubMsPerfHarness`, `stage().time/record/timeAsync/warmThenTime`, `summarize`, `summaryToJson`, `printSummary`, `assertP99Under`, `formatNs`. Its JSON, summary table, `format_ns` strings and assertion messages are byte-identical to the Rust crate on 12 golden cases, including half-to-even rounding ties, sums past 2^53 and UTF-8 key order. 71 tests.
+- `rust/examples/ts_parity_golden.rs`: writes those golden cases through the public API; regenerate with `cargo run --example ts_parity_golden > ../ts/testdata/rust-golden.json`.
+
 ## [0.9.4] - 2026-08-10
 
 ### Fixed

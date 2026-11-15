@@ -1,0 +1,26 @@
+{
+  "name": "@submillisecond/subms",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The sub-millisecond perf harness for TypeScript on Node. Zero-dependency port of the Rust subms core: records timed samples per stage, computes percentiles, and emits the same JSON contract as the Rust and Java harnesses.",
+  "license": "MIT OR Apache-2.0",
+  "author": "Kieran Smith <oss@submillisecond.com>",
+  "homepage": "https://www.submillisecond.com/cookbook/primers/subms-perf-harness",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/submillisecond/subms.git",
+    "directory": "ts"
+  },
+  "keywords": ["benchmark", "performance", "perf-testing", "low-latency", "p99"],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": ["src", "!src/**/*.test.ts", "LICENSE-MIT", "LICENSE-APACHE", "README.md"],
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test \"src/**/*.test.ts\""
+  }
+}
